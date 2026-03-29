@@ -114,15 +114,15 @@ export function useInvoice() {
 	 */
 	async function resolveUomPricing(item, uom, conversionFactor, qty) {
 		// When online, fetch server pricing for customer-specific rates
-		if (!isOffline()) {
-			try {
-				const itemDetails = await getItemDetailsResource.submit({
-					item_code: item.item_code,
-					pos_profile: posProfile.value,
-					customer: customer.value?.name || customer.value,
-					qty,
-					uom,
-				})
+	if (!isOffline() && posProfile.value) {
+		try {
+			const itemDetails = await getItemDetailsResource.submit({
+				item_code: item.item_code,
+				pos_profile: posProfile.value,
+				customer: customer.value?.name || customer.value,
+				qty,
+				uom,
+			})
 				return {
 					rate: itemDetails.price_list_rate || itemDetails.rate,
 					price_list_rate: itemDetails.price_list_rate,

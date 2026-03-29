@@ -66,7 +66,7 @@
 														{{ localItem.item_name }}
 													</h3>
 													<p class="text-sm text-gray-500 truncate">
-														{{ formatCurrency(localItem.price_list_rate || localItem.rate) }} / {{ localItem.stock_uom || __('Nos', null, 'UOM') }}
+														{{ formatCurrency(localRate) }} / {{ formatUomLabel(localUom || localItem.stock_uom || __('Nos', null, 'UOM')) }}
 													</p>
 												</div>
 											</div>
@@ -78,17 +78,17 @@
 													<!-- Quantity Control -->
 													<div>
 														<label class="block text-sm font-medium text-gray-700 mb-2 text-start">
-                              {{ __('Quantity') }}
-                              <span v-if="localItem?.is_resolved_barcode" class="ms-1 text-xs text-amber-600">({{ __('Locked') }})</span>
-                            </label>
+															{{ __('Quantity') }}
+															<span v-if="localItem?.is_resolved_barcode" class="ms-1 text-xs text-amber-600">({{ __('Locked') }})</span>
+														</label>
 														<!-- For serial items, quantity is read-only (controlled by serial list) -->
 														<div v-if="localItem?.has_serial_no && localSerials.length > 0" class="w-full h-7 border border-gray-300 rounded-lg bg-gray-50 flex items-center justify-center">
 															<span class="text-sm font-semibold text-gray-600">{{ localSerials.length }}</span>
 														</div>
-                            <!-- For resolved barcode items, quantity is read-only -->
-                            <div v-else-if="localItem?.is_resolved_barcode" class="w-full h-10 border border-amber-300 rounded-lg bg-amber-50 flex items-center justify-center">
-                              <span class="text-sm font-semibold text-amber-700">{{ localQuantity }}</span>
-                            </div>
+														<!-- For resolved barcode items, quantity is read-only -->
+														<div v-else-if="localItem?.is_resolved_barcode" class="w-full h-10 border border-amber-300 rounded-lg bg-amber-50 flex items-center justify-center">
+															<span class="text-sm font-semibold text-amber-700">{{ localQuantity }}</span>
+														</div>
 														<!-- For non-serial items, show quantity controls -->
 														<div v-else class="w-full h-7 border border-gray-300 rounded-lg bg-white flex items-center overflow-hidden">
 															<button
@@ -140,7 +140,6 @@
 																@input="calculateTotals"
 															/>
 														</div>
-														<!-- Compact warning when rate editing disabled due to pricing rules -->
 														<p v-if="hasPricingRules && settingsStore.allowUserToEditRate" class="mt-1 text-xs text-amber-600 flex items-center gap-1">
 															<FeatherIcon name="lock" class="w-3 h-3" />
 															{{ __('Locked (offer applied)') }}
@@ -153,14 +152,13 @@
 													<!-- UOM Selector -->
 													<div>
 														<label class="block text-sm font-medium text-gray-700 mb-2 text-start">
-                              {{ __('UOM') }}
-                              <span v-if="localItem?.is_resolved_barcode" class="ms-1 text-xs text-amber-600">({{ __('Locked') }})</span>
-                            </label>
-                            <!-- For resolved barcode items, UOM is read-only -->
-                            <div v-if="localItem?.is_resolved_barcode" class="w-full h-10 border border-amber-300 rounded-lg bg-amber-50 flex items-center justify-center">
-                              <span class="text-sm font-semibold text-amber-700">{{ localUom }}</span>
-                            </div>
-                            <SelectInput v-else v-model="localUom" :options="uomOptions" @change="handleUomChange" />
+															{{ __('UOM') }}
+															<span v-if="localItem?.is_resolved_barcode" class="ms-1 text-xs text-amber-600">({{ __('Locked') }})</span>
+														</label>
+														<div v-if="localItem?.is_resolved_barcode" class="w-full h-10 border border-amber-300 rounded-lg bg-amber-50 flex items-center justify-center">
+															<span class="text-sm font-semibold text-amber-700">{{ formatUomLabel(localUom) }}</span>
+														</div>
+														<SelectInput v-else v-model="localUom" :options="uomOptions" @change="handleUomChange" />
 													</div>
 
 													<!-- Warehouse Selector -->
@@ -212,12 +210,10 @@
 											<div v-if="settingsStore.allowItemDiscount" class="border-t border-gray-200 pt-4">
 												<label class="block text-sm font-medium text-gray-700 mb-3 text-start">{{ __('Item Discount') }}</label>
 												<div class="grid grid-cols-2 gap-3">
-													<!-- Discount Type -->
 													<div>
 														<label class="block text-xs text-gray-600 mb-1 text-start">{{ __('Discount Type') }}</label>
 														<SelectInput v-model="discountType" :options="discountTypeOptions" @change="handleDiscountTypeChange" />
 													</div>
-													<!-- Discount Value -->
 													<div>
 														<label class="block text-xs text-gray-600 mb-1 text-start">{{ discountType === 'percentage' ? __('Percentage') : __('Amount') }}</label>
 														<div class="relative">
@@ -258,6 +254,22 @@
 								</div>
 							</div>
 
+									<!-- Stock Status -->
+									<div
+										v-if="stockState"
+										:class="['rounded-lg p-4 text-sm', stockState.panelClass]"
+									>
+										<div class="flex items-start gap-2">
+											<FeatherIcon name="alert-triangle" class="h-4 w-4 mt-0.5 flex-shrink-0" />
+											<div>
+												<p class="font-semibold">{{ stockState.title }}</p>
+												<p class="mt-1">{{ __('Available: {0} {1}', [currentAvailableStock, currentStockUom]) }}</p>
+												<p>{{ __('Required: {0} {1}', [currentRequiredStockQty, currentStockUom]) }}</p>
+												<p class="mt-1">{{ stockState.note }}</p>
+											</div>
+										</div>
+									</div>
+
 							<!-- Actions - matching frappe-ui Dialog style -->
 							<div class="px-4 pb-7 pt-4 sm:px-6">
 								<div class="flex items-center justify-end gap-2">
@@ -268,7 +280,7 @@
 										:disabled="!hasStock || isCheckingStock"
 									>
 										<span v-if="isCheckingStock">{{ __('Checking Stock...') }}</span>
-										<span v-else-if="!hasStock">{{ __('No Stock Available') }}</span>
+										<span v-else-if="!hasStock">{{ settingsStore.shouldEnforceStockValidation() ? __('Cannot Sell') : __('Low Stock') }}</span>
 										<span v-else>{{ __('Update Item') }}</span>
 									</Button>
 								</div>
@@ -282,6 +294,7 @@
 </template>
 
 <script setup>
+import { useInvoice } from "@/composables/useInvoice"
 import { useToast } from "@/composables/useToast"
 import { usePOSSettingsStore } from "@/stores/posSettings"
 import { useSerialNumberStore } from "@/stores/serialNumber"
@@ -294,6 +307,7 @@ import SelectInput from "@/components/common/SelectInput.vue"
 const { showSuccess, showError, showWarning } = useToast()
 const settingsStore = usePOSSettingsStore()
 const serialStore = useSerialNumberStore()
+const { resolveUomPricing } = useInvoice()
 
 const props = defineProps({
 	modelValue: Boolean,
@@ -323,10 +337,12 @@ const calculatedDiscount = ref(0)
 const calculatedTotal = ref(0)
 const hasStock = ref(true)
 const isCheckingStock = ref(false)
-const localSerials = ref([]) // List of serial numbers for this item
-const removedSerials = ref([]) // Track serials removed during this edit session
-const originalSerials = ref([]) // Original serials when dialog opened
-const originalPriceListRate = ref(0) // Original price_list_rate when dialog opened (for rate edit validation)
+const localSerials = ref([])
+const removedSerials = ref([])
+const originalSerials = ref([])
+const originalPriceListRate = ref(0)
+const currentAvailableStock = ref(0)
+const stockValidationMessage = ref("")
 
 const show = computed({
 	get: () => props.modelValue,
@@ -342,20 +358,15 @@ const availableUoms = computed(() => {
 
 const currencySymbol = computed(() => getCurrencySymbol(props.currency))
 
-// Check if item has pricing rules applied (promotional offers)
 const hasPricingRules = computed(() => {
 	if (!localItem.value) return false
 	return Boolean(localItem.value.pricing_rules) && localItem.value.pricing_rules.length > 0
 })
 
-// Rate editing is allowed only if:
-// 1. POS Settings allows rate editing AND
-// 2. Item does NOT have pricing rules (promotional offers) applied
 const canEditRate = computed(() => {
 	return settingsStore.allowUserToEditRate && !hasPricingRules.value
 })
 
-// Tooltip message for why rate editing is disabled
 const rateEditDisabledReason = computed(() => {
 	if (!settingsStore.allowUserToEditRate) {
 		return __('Rate editing is disabled')
@@ -363,16 +374,28 @@ const rateEditDisabledReason = computed(() => {
 	if (hasPricingRules.value) {
 		return __('Locked (offer applied)')
 	}
-	return ''
+	return ""
 })
 
-// Options for SelectInput components
+function getUomConversionFactor(uom) {
+	if (!localItem.value || !uom) return 1
+	if (uom === localItem.value.stock_uom) return 1
+	const uomRow = localItem.value.item_uoms?.find((row) => row.uom === uom)
+	return Number(uomRow?.conversion_factor || 1)
+}
+
+function formatUomLabel(uom) {
+	if (!uom) return ""
+	const factor = getUomConversionFactor(uom)
+	return factor && factor !== 1 ? `${uom} x ${factor}` : uom
+}
+
 const uomOptions = computed(() => {
 	if (!localItem.value) return []
-	const options = [{ value: localItem.value.stock_uom, label: localItem.value.stock_uom }]
+	const options = [{ value: localItem.value.stock_uom, label: formatUomLabel(localItem.value.stock_uom) }]
 	if (availableUoms.value.length > 0) {
-		availableUoms.value.forEach(uomData => {
-			options.push({ value: uomData.uom, label: uomData.uom })
+		availableUoms.value.forEach((uomData) => {
+			options.push({ value: uomData.uom, label: formatUomLabel(uomData.uom) })
 		})
 	}
 	return options
@@ -380,20 +403,50 @@ const uomOptions = computed(() => {
 
 const warehouseOptions = computed(() => {
 	if (props.warehouses.length > 0) {
-		return props.warehouses.map(w => ({
+		return props.warehouses.map((w) => ({
 			value: w.name,
-			label: w.warehouse || w.name
+			label: w.warehouse || w.name,
 		}))
 	}
 	return [{ value: localWarehouse.value, label: localWarehouse.value || __('Default') }]
 })
 
+const currentConversionFactor = computed(() => getUomConversionFactor(localUom.value))
+
+const currentRequiredStockQty = computed(() => {
+	return (Number(localQuantity.value || 1) || 1) * currentConversionFactor.value
+})
+
+const currentStockUom = computed(() => {
+	return localItem.value?.stock_uom || localUom.value || __("Nos")
+})
+
+const stockState = computed(() => {
+	if (!localItem.value) return null
+	const availableStock = Number(currentAvailableStock.value || 0)
+	const requiredStockQty = Number(currentRequiredStockQty.value || 0)
+
+	if (requiredStockQty <= availableStock) return null
+
+	const blocked = settingsStore.shouldEnforceStockValidation()
+	return {
+		available: availableStock,
+		required: requiredStockQty,
+		stockUom: currentStockUom.value,
+		blocked,
+		title: blocked ? __("Insufficient stock") : __("Low stock"),
+		note: blocked ? __("Cannot sell") : __("Sale allowed"),
+		panelClass: blocked
+			? "bg-orange-50 text-orange-700 border border-orange-200"
+			: "bg-amber-50 text-amber-700 border border-amber-200",
+	}
+})
+
 const discountTypeOptions = computed(() => [
-	{ value: 'percentage', label: __('Percentage (%)') },
-	{ value: 'amount', label: __('Amount') }
+	{ value: "percentage", label: __('Percentage (%)') },
+	{ value: "amount", label: __('Amount') },
 ])
 
-// Initialize local state when item changes
 watch(
 	() => props.item,
 	(newItem) => {
@@ -402,18 +455,14 @@ watch(
 			localQuantity.value = newItem.quantity || 1
 			localUom.value = newItem.uom || newItem.stock_uom || __("Nos")
 			localRate.value = newItem.rate || 0
-			// Store original price_list_rate for rate edit validation
 			originalPriceListRate.value = newItem.price_list_rate || newItem.rate || 0
-			localWarehouse.value =
-				newItem.warehouse || props.warehouses[0]?.name || ""
+			localWarehouse.value = newItem.warehouse || props.warehouses[0]?.name || ""
 
-			// Initialize serial numbers
 			if (newItem.has_serial_no && newItem.serial_no) {
-				const serials = newItem.serial_no.split('\n').filter(s => s.trim())
+				const serials = newItem.serial_no.split("\n").filter((s) => s.trim())
 				localSerials.value = [...serials]
-				originalSerials.value = [...serials] // Keep original for cancel
-				removedSerials.value = [] // Reset removed serials tracker
-				// For serial items, quantity must match serial count
+				originalSerials.value = [...serials]
+				removedSerials.value = []
 				localQuantity.value = serials.length
 			} else {
 				localSerials.value = []
@@ -421,7 +470,6 @@ watch(
 				removedSerials.value = []
 			}
 
-			// Initialize discount
 			if (newItem.discount_percentage && newItem.discount_percentage > 0) {
 				discountType.value = "percentage"
 				discountValue.value = newItem.discount_percentage
@@ -433,56 +481,116 @@ watch(
 				discountValue.value = 0
 			}
 
-			// Reset stock check state
+			currentAvailableStock.value = Number(
+				newItem.actual_qty ?? newItem.stock_qty ?? 0,
+			)
 			hasStock.value = true
 			isCheckingStock.value = false
 
 			calculateTotals()
+			validateCurrentStock()
 		}
 	},
 	{ immediate: true },
 )
 
-/**
- * Intelligently determine the step size based on current quantity
- * - Whole numbers (1, 2, 3): step by 1
- * - Multiples of 0.5 (1.5, 2.5): step by 0.5
- * - Multiples of 0.25 (0.25, 0.75): step by 0.25
- * - Multiples of 0.1 (0.1, 0.3): step by 0.1
- * - Other decimals: step by 0.01
- */
+
+function validateCurrentStock({ showToast = false } = {}) {
+	if (!localItem.value) {
+		hasStock.value = true
+		stockValidationMessage.value = ""
+		return true
+	}
+
+	const availableStock = Number(currentAvailableStock.value || localItem.value.actual_qty || localItem.value.stock_qty || 0)
+	const requiredStockQty = Number(currentRequiredStockQty.value || 0)
+	const blocked = settingsStore.shouldEnforceStockValidation() && requiredStockQty > availableStock
+	hasStock.value = !blocked
+	stockValidationMessage.value = requiredStockQty > availableStock
+		? (blocked ? __("Cannot sell") : __("Sale allowed"))
+		: ""
+
+	if (showToast && requiredStockQty > availableStock) {
+		const message = __('Available: {0} {1} | Required: {2} {1}', [
+			availableStock,
+			currentStockUom.value,
+			requiredStockQty,
+		])
+		if (blocked) {
+			showError(message)
+		} else {
+			showWarning(message)
+		}
+	}
+
+	return !blocked
+}
+
+async function refreshWarehouseStock() {
+	if (!localItem.value) return
+
+	const warehouse = localWarehouse.value || localItem.value.warehouse
+	if (!warehouse) {
+		currentAvailableStock.value = Number(localItem.value.actual_qty ?? localItem.value.stock_qty ?? 0)
+		validateCurrentStock()
+		return
+	}
+
+	isCheckingStock.value = true
+	try {
+		currentAvailableStock.value = Number(
+			(await getItemStock(localItem.value.item_code, warehouse))
+			?? localItem.value.actual_qty
+			?? localItem.value.stock_qty
+			?? 0,
+		)
+	} catch (error) {
+		console.error('Error checking stock:', error)
+		currentAvailableStock.value = Number(localItem.value.actual_qty ?? localItem.value.stock_qty ?? 0)
+	} finally {
+		isCheckingStock.value = false
+	}
+
+	validateCurrentStock()
+}
+
+function getBlockedQuantity(step = 0) {
+	return Number(localQuantity.value || 0) + Number(step || 0)
+}
+
 function getSmartStep(quantity) {
-	// Check if it's a whole number
 	if (quantity === Math.floor(quantity)) {
 		return 1
 	}
 
-	// Round to 4 decimal places to avoid floating point errors
 	const rounded = Math.round(quantity * 10000) / 10000
 
-	// Check if it's a multiple of 0.5
-	if (Math.abs((rounded % 0.5)) < 0.0001) {
+	if (Math.abs(rounded % 0.5) < 0.0001) {
 		return 0.5
 	}
 
-	// Check if it's a multiple of 0.25
-	if (Math.abs((rounded % 0.25)) < 0.0001) {
+	if (Math.abs(rounded % 0.25) < 0.0001) {
 		return 0.25
 	}
 
-	// Check if it's a multiple of 0.1
-	if (Math.abs((rounded % 0.1)) < 0.0001) {
+	if (Math.abs(rounded % 0.1) < 0.0001) {
 		return 0.1
 	}
 
-	// For other decimals, use 0.01 for fine control
 	return 0.01
 }
 
 function incrementQuantity() {
 	const step = getSmartStep(localQuantity.value)
-	localQuantity.value = Math.round((localQuantity.value + step) * 10000) / 10000
+	const nextQty = Math.round((localQuantity.value + step) * 10000) / 10000
+	const previousQty = localQuantity.value
+	localQuantity.value = nextQty
 	calculateTotals()
+	const isValid = validateCurrentStock()
+	if (!isValid) {
+		localQuantity.value = previousQty
+		calculateTotals()
+	}
 }
 
 function decrementQuantity() {
@@ -492,96 +600,106 @@ function decrementQuantity() {
 	if (newQty > 0) {
 		localQuantity.value = newQty
 		calculateTotals()
+		validateCurrentStock()
 	}
 }
 
 function handleQuantityInput() {
-	// Allow any value during typing, just recalculate totals
-	// Don't validate or reset - let user type freely
 	if (localQuantity.value > 0 && !isNaN(localQuantity.value)) {
 		calculateTotals()
+		validateCurrentStock()
 	}
 }
 
 function handleQuantityBlur() {
-	// Validate and fix the quantity when user is done editing (leaves the field)
 	if (!localQuantity.value || localQuantity.value <= 0 || isNaN(localQuantity.value)) {
-		// If invalid, reset to 1
 		localQuantity.value = 1
 	} else {
-		// Round to 4 decimal places for consistency
 		localQuantity.value = Math.round(localQuantity.value * 10000) / 10000
 	}
 	calculateTotals()
+	validateCurrentStock()
 }
 
-function handleUomChange() {
-	// When UOM changes, we need to fetch new rate from server
-	// For now, we'll just recalculate with current rate
-	calculateTotals()
+async function handleUomChange() {
+	if (!localItem.value || !localUom.value) {
+		calculateTotals()
+		return
+	}
+
+	const previousUom = localItem.value.uom || localItem.value.stock_uom
+	const previousRate = localRate.value
+	const previousPriceListRate = originalPriceListRate.value
+
+	try {
+		const conversionFactor = getUomConversionFactor(localUom.value)
+
+		const pricing = await resolveUomPricing(
+			localItem.value,
+			localUom.value,
+			conversionFactor,
+			localQuantity.value || 1,
+		)
+
+		localRate.value = pricing.rate || pricing.price_list_rate || 0
+		originalPriceListRate.value = pricing.price_list_rate || localRate.value
+
+		calculateTotals()
+		const isValid = validateCurrentStock()
+		if (!isValid) {
+			localUom.value = previousUom
+			localRate.value = previousRate
+			originalPriceListRate.value = previousPriceListRate
+			calculateTotals()
+			validateCurrentStock()
+		}
+	} catch (err) {
+		console.error("UOM pricing refresh failed:", err)
+		localUom.value = previousUom
+		localRate.value = previousRate
+		originalPriceListRate.value = previousPriceListRate
+		calculateTotals()
+		validateCurrentStock()
+	}
 }
 
 async function handleWarehouseChange() {
 	if (!localItem.value || !localWarehouse.value) return
-
-	isCheckingStock.value = true
-	try {
-		// Check stock availability in the new warehouse
-		const availableStock = await getItemStock(
-			localItem.value.item_code,
-			localWarehouse.value,
-		)
-
-		if (availableStock === 0) {
-			hasStock.value = false
-			showError(
-				__('"{0}" is not available in warehouse "{1}". Please select another warehouse.',
-				[localItem.value.item_name, localWarehouse.value])
-			)
-		} else if (availableStock < localQuantity.value) {
-			hasStock.value = false
-			showWarning(
-				__('Only {0} units of "{1}" available in "{2}". Current quantity: {3}', [
-					availableStock,
-					localItem.value.item_name,
-					localWarehouse.value,
-					localQuantity.value
-				])
-			)
-		} else {
-			hasStock.value = true
-			showSuccess(
-				__('{0} units available in "{1}"', [availableStock, localWarehouse.value])
-			)
-		}
-	} catch (error) {
-		console.error("Error checking warehouse stock:", error)
-		hasStock.value = true // Allow update if stock check fails
-	} finally {
-		isCheckingStock.value = false
-	}
+	await refreshWarehouseStock()
+	validateCurrentStock({ showToast: true })
 }
 
+watch([localQuantity, localUom, localWarehouse], async () => {
+	if (!show.value || !localItem.value) return
+	validateCurrentStock()
+})
+
+watch(
+	() => [show.value, localWarehouse.value, localItem.value?.item_code],
+	async ([isOpen, warehouse, itemCode], [prevOpen, prevWarehouse, prevItemCode] = []) => {
+		if (!isOpen || !itemCode) return
+		if (warehouse !== prevWarehouse || itemCode !== prevItemCode || isOpen !== prevOpen) {
+			await refreshWarehouseStock()
+		}
+	},
+)
+
 function handleDiscountTypeChange() {
-	// Reset discount value when type changes
 	discountValue.value = 0
 	calculateTotals()
 }
 
 function calculateDiscount() {
-	// Round to currency precision to prevent floating point precision issues (e.g., 10.000000000000002)
 	if (discountValue.value !== null && discountValue.value !== undefined && !isNaN(discountValue.value)) {
 		discountValue.value = roundCurrency(discountValue.value)
 	}
 
 	if (discountType.value === "percentage") {
-		// Ensure percentage doesn't exceed 100
 		if (discountValue.value > 100) {
 			discountValue.value = 100
 		}
 		calculatedDiscount.value = roundCurrency((calculatedSubtotal.value * discountValue.value) / 100)
 	} else {
-		// Ensure amount doesn't exceed subtotal
 		if (discountValue.value > calculatedSubtotal.value) {
 			discountValue.value = roundCurrency(calculatedSubtotal.value)
 		}
@@ -596,13 +714,10 @@ function calculateTotals() {
 }
 
 function removeSerial(serialNo) {
-	// Remove from local list
 	const index = localSerials.value.indexOf(serialNo)
 	if (index > -1) {
 		localSerials.value.splice(index, 1)
-		// Track removed serial (will be returned to cache on confirm)
 		removedSerials.value.push(serialNo)
-		// Update quantity to match serial count
 		localQuantity.value = localSerials.value.length
 		calculateTotals()
 	}
@@ -612,21 +727,15 @@ function formatCurrency(amount) {
 	return formatCurrencyUtil(Number.parseFloat(amount || 0), props.currency)
 }
 
-function updateItem() {
-	// Check if rate was manually edited
+async function updateItem() {
 	const isRateManuallyEdited = localRate.value !== originalPriceListRate.value
 
-	// ========================================================================
-	// RATE EDIT VALIDATION
-	// ========================================================================
 	if (settingsStore.allowUserToEditRate && isRateManuallyEdited) {
-		// Validate rate is positive
 		if (localRate.value <= 0) {
 			showError(__('Rate must be greater than zero'))
 			return
 		}
 
-		// Validate against max discount if rate was reduced
 		const maxDiscount = settingsStore.maxDiscountAllowed
 		if (maxDiscount > 0 && localRate.value < originalPriceListRate.value) {
 			const discountPercent = ((originalPriceListRate.value - localRate.value) / originalPriceListRate.value) * 100
@@ -636,12 +745,17 @@ function updateItem() {
 				showError(
 					__('Rate reduction of {0}% exceeds maximum allowed discount of {1}%', [
 						roundedDiscount.toFixed(2),
-						maxDiscount
-					])
+						maxDiscount,
+					]),
 				)
 				return
 			}
 		}
+	}
+
+	const isStockValid = validateCurrentStock({ showToast: true })
+	if (!isStockValid) {
+		return
 	}
 
 	const updatedItem = {
@@ -649,24 +763,20 @@ function updateItem() {
 		quantity: localQuantity.value,
 		uom: localUom.value,
 		rate: localRate.value,
-		// Preserve price_list_rate for reference (original price before any manual edits)
 		price_list_rate: originalPriceListRate.value,
 		warehouse: localWarehouse.value,
 		discount_percentage:
 			discountType.value === "percentage" ? discountValue.value : 0,
 		discount_amount:
 			discountType.value === "amount" ? discountValue.value : 0,
-		// Track manual rate edits for audit logging
 		is_rate_manually_edited: isRateManuallyEdited ? 1 : 0,
 		original_rate: isRateManuallyEdited ? originalPriceListRate.value : null,
 	}
 
-	// Update serial numbers if item has serials
 	if (localItem.value.has_serial_no) {
-		updatedItem.serial_no = localSerials.value.join('\n')
+		updatedItem.serial_no = localSerials.value.join("\n")
 		updatedItem.quantity = localSerials.value.length
 
-		// Return removed serials to cache now that update is confirmed
 		if (removedSerials.value.length > 0) {
 			serialStore.returnSerials(localItem.value.item_code, removedSerials.value)
 		}
@@ -682,7 +792,6 @@ function cancel() {
 </script>
 
 <style scoped>
-/* Hide number input spinners */
 input[type="number"]::-webkit-inner-spin-button,
 input[type="number"]::-webkit-outer-spin-button {
 	appearance: none;
@@ -695,7 +804,6 @@ input[type="number"] {
 	-moz-appearance: textfield;
 }
 
-/* Use CSS custom properties from index.css for consistent z-index layering */
 .z-dialog-overlay {
 	z-index: var(--z-dialog-overlay, 400);
 }

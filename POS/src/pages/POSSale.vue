@@ -2177,18 +2177,22 @@ async function handleOptionSelected(option) {
 					showError(error.message);
 				}
 			}
+
 		} else if (option.type === "uom") {
 			const qty = option.quantity || cartStore.pendingItemQty;
 			const pricing = await cartStore.resolveUomPricing(
 				cartStore.pendingItem, option.uom, option.conversion_factor, qty
 			);
 
+			const selectedRate = option.rate ?? pricing.rate ?? 0;
+			const selectedPriceListRate = option.rate ?? pricing.price_list_rate ?? selectedRate;
+
 			const itemToAdd = {
 				...cartStore.pendingItem,
 				uom: option.uom,
 				conversion_factor: option.conversion_factor,
-				rate: pricing.rate,
-				price_list_rate: pricing.price_list_rate,
+				rate: selectedRate,
+				price_list_rate: selectedPriceListRate,
 			};
 
 			if (itemToAdd.has_batch_no || itemToAdd.has_serial_no) {

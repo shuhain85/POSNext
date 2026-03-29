@@ -1,12 +1,8 @@
 import { useInvoice } from "@/composables/useInvoice"
 import { usePOSOffersStore } from "@/stores/posOffers"
 import { usePOSSettingsStore } from "@/stores/posSettings"
-import { usePOSShiftStore } from "@/stores/posShift"
 import { parseError } from "@/utils/errorHandler"
-import {
-	shouldValidateItemStock,
-	checkStockAvailability,
-} from "@/utils/stockValidator"
+import posConnector from "@/utils/pos_connector"
 import { offlineState } from "@/utils/offline/offlineState"
 import { useToast } from "@/composables/useToast"
 import { defineStore } from "pinia"
@@ -172,24 +168,61 @@ export const usePOSCartStore = defineStore("posCart", () => {
 	const isEmpty = computed(() => invoiceItems.value.length === 0)
 	const hasCustomer = computed(() => !!customer.value)
 
-	// Actions
-	function addItem(item, qty = 1, _autoAdd = false, currentProfile = null) {
-		if (currentProfile && settingsStore.shouldEnforceStockValidation() && shouldValidateItemStock(item)) {
-			// Account for quantity already in the cart for this item
-			const itemUom = item.uom || item.stock_uom
-			const existing = invoiceItems.value.find(
-				(i) => i.item_code === item.item_code && i.uom === itemUom,
-			)
-			const totalQty = (existing ? existing.quantity : 0) + qty
-			const warehouse = item.warehouse || currentProfile.warehouse
-
-			const check = checkStockAvailability(item, totalQty, warehouse)
-			if (!check.available) {
-				throw new Error(check.error)
-			}
+	async function prepareConnectorCartLine({
+		item,
+		qty = 1,
+		uom = null,
+		warehouse = null,
+		rate = null,
+		discount = null,
+		enforceStock = true,
+	}) {
+		const safeItem = {
+			...(item || {}),
 		}
 
-		addItemToInvoice(item, qty)
+		if (!enforceStock) {
+			safeItem.allow_negative_stock = 1
+		}
+
+		const effectiveRate =
+			Number.parseFloat(rate ?? safeItem.rate ?? safeItem.price_list_rate ?? 0) || 0
+
+		return await posConnector.prepareCartLine({
+			item: safeItem,
+			qty,
+			uom,
+			rate: effectiveRate,
+			discount: discount || {},
+			warehouse: warehouse || safeItem.warehouse || null,
+		})
+	}
+
+	// Actions
+	async function addItem(item, qty = 1, _autoAdd = false, currentProfile = null) {
+		const itemUom = item?.uom || item?.stock_uom || null
+		const existing = invoiceItems.value.find(
+			(i) => i.item_code === item?.item_code && i.uom === itemUom,
+		)
+		const totalQty = (existing ? existing.quantity : 0) + qty
+		const warehouse = item?.warehouse || currentProfile?.warehouse || null
+		const enforceStock = settingsStore.shouldEnforceStockValidation()
+
+		const prepared = await prepareConnectorCartLine({
+			item,
+			qty: totalQty,
+			uom: itemUom,
+			warehouse,
+			enforceStock,
+		})
+
+		if (!prepared?.ok) {
+			showWarning(prepared?.message || __("Unable to add item to cart."))
+			return false
+		}
+
+		addItemToInvoice(prepared.item || item, qty)
+		return true
 	}
 
 	/**
@@ -197,25 +230,40 @@ export const usePOSCartStore = defineStore("posCart", () => {
 	 * Wraps useInvoice.updateItemQuantity to enforce stock limits
 	 * when the user clicks +/- or types a new quantity.
 	 */
-	function updateItemQuantity(itemCode, quantity, uom = null) {
+	async function updateItemQuantity(itemCode, quantity, uom = null) {
 		const item = uom
 			? invoiceItems.value.find((i) => i.item_code === itemCode && i.uom === uom)
 			: invoiceItems.value.find((i) => i.item_code === itemCode)
 
-		if (!item) return baseUpdateItemQuantity(itemCode, quantity, uom)
+		if (!item) {
+			baseUpdateItemQuantity(itemCode, quantity, uom)
+			return true
+		}
 
 		const newQty = Number.parseFloat(quantity) || 1
+		const enforceStock = settingsStore.shouldEnforceStockValidation()
 
-		// Only validate when quantity is increasing
-		if (newQty > item.quantity && settingsStore.shouldEnforceStockValidation() && shouldValidateItemStock(item)) {
-			const check = checkStockAvailability(item, newQty)
-			if (!check.available) {
-				showWarning(check.error)
-				return
-			}
+		const prepared = await prepareConnectorCartLine({
+			item,
+			qty: newQty,
+			uom: item.uom,
+			warehouse: item.warehouse,
+			rate: item.rate,
+			discount: item.discount_percentage
+				? { type: "percentage", value: item.discount_percentage }
+				: item.discount_amount
+					? { type: "amount", value: item.discount_amount }
+					: {},
+			enforceStock,
+		})
+
+		if (!prepared?.ok) {
+			showWarning(prepared?.message || __("Unable to update quantity."))
+			return false
 		}
 
 		baseUpdateItemQuantity(itemCode, quantity, uom)
+		return true
 	}
 
 	function clearCart() {
@@ -1198,24 +1246,65 @@ export const usePOSCartStore = defineStore("posCart", () => {
 	async function changeItemUOM(itemCode, newUom, currentUom = null) {
 		try {
 			const cartItem = findCartItem(itemCode, currentUom)
-			if (!cartItem || cartItem.uom === newUom) return
+			if (!cartItem || cartItem.uom === newUom) return false
 
-			// Check for existing item to merge with
+			const enforceStock = settingsStore.shouldEnforceStockValidation()
 			const existingItem = findItemWithUom(itemCode, newUom, cartItem)
+
 			if (existingItem) {
+				const mergedValidation = await prepareConnectorCartLine({
+					item: existingItem,
+					qty: existingItem.quantity + cartItem.quantity,
+					uom: newUom,
+					warehouse: existingItem.warehouse || cartItem.warehouse,
+					rate: existingItem.rate,
+					discount: existingItem.discount_percentage
+						? { type: "percentage", value: existingItem.discount_percentage }
+						: existingItem.discount_amount
+							? { type: "amount", value: existingItem.discount_amount }
+							: {},
+					enforceStock,
+				})
+
+				if (!mergedValidation?.ok) {
+					showWarning(mergedValidation?.message || __("Unable to change unit."))
+					return false
+				}
+
 				const totalQty = mergeItems(cartItem, existingItem, cartItem.quantity)
 				showSuccess(__('Merged into {0} (Total: {1})', [newUom, totalQty]))
-				return
+				return true
 			}
 
-			// Apply UOM change
-			await applyUomChange(cartItem, newUom, cartItem.quantity)
+			const prepared = await prepareConnectorCartLine({
+				item: cartItem,
+				qty: cartItem.quantity,
+				uom: newUom,
+				warehouse: cartItem.warehouse,
+				rate: cartItem.rate,
+				discount: cartItem.discount_percentage
+					? { type: "percentage", value: cartItem.discount_percentage }
+					: cartItem.discount_amount
+						? { type: "amount", value: cartItem.discount_amount }
+						: {},
+				enforceStock,
+			})
+
+			if (!prepared?.ok) {
+				showWarning(prepared?.message || __("Unable to change unit."))
+				return false
+			}
+
+			const finalUom = prepared.uom || prepared.item?.uom || newUom
+			await applyUomChange(cartItem, finalUom, cartItem.quantity)
 			recalculateItem(cartItem)
 			rebuildIncrementalCache()
-			showSuccess(__('Unit changed to {0}', [newUom]))
+			showSuccess(__('Unit changed to {0}', [finalUom]))
+			return true
 		} catch (error) {
 			console.error("Error changing UOM:", error)
 			showError(__("Failed to update UOM. Please try again."))
+			return false
 		}
 	}
 
@@ -1232,48 +1321,122 @@ export const usePOSCartStore = defineStore("posCart", () => {
 				throw new Error("Item not found in cart")
 			}
 
-			// Handle UOM change with potential merge
-			if (updates.uom && updates.uom !== cartItem.uom) {
-				const existingItem = findItemWithUom(itemCode, updates.uom, cartItem)
+			const targetUom = updates.uom || cartItem.uom
+			const targetQty = updates.quantity ?? cartItem.quantity
+			const targetWarehouse = updates.warehouse || cartItem.warehouse
+			const enforceStock = settingsStore.shouldEnforceStockValidation()
+			const targetRate = updates.rate ?? cartItem.rate
+			const targetDiscount = updates.discount_percentage !== undefined
+				? { type: "percentage", value: updates.discount_percentage }
+				: updates.discount_amount !== undefined
+					? { type: "amount", value: updates.discount_amount }
+					: cartItem.discount_percentage
+						? { type: "percentage", value: cartItem.discount_percentage }
+						: cartItem.discount_amount
+							? { type: "amount", value: cartItem.discount_amount }
+							: {}
+
+			const validationBaseItem = {
+				...cartItem,
+				warehouse: targetWarehouse,
+			}
+
+			const prepared = await prepareConnectorCartLine({
+				item: validationBaseItem,
+				qty: targetQty,
+				uom: targetUom,
+				warehouse: targetWarehouse,
+				rate: targetRate,
+				discount: targetDiscount,
+				enforceStock,
+			})
+
+			if (!prepared?.ok) {
+				showWarning(prepared?.message || __("Unable to update item."))
+				return false
+			}
+
+			const finalUom = prepared.uom || prepared.item?.uom || targetUom
+
+			if (finalUom && finalUom !== cartItem.uom) {
+				const existingItem = findItemWithUom(itemCode, finalUom, cartItem)
 				if (existingItem) {
-					const qtyToMerge = updates.quantity ?? cartItem.quantity
-					const totalQty = mergeItems(cartItem, existingItem, qtyToMerge)
-					showSuccess(__('Merged into {0} (Total: {1})', [updates.uom, totalQty]))
+					const mergeValidation = await prepareConnectorCartLine({
+						item: existingItem,
+						qty: existingItem.quantity + targetQty,
+						uom: finalUom,
+						warehouse: targetWarehouse || existingItem.warehouse,
+						rate: existingItem.rate,
+						discount: existingItem.discount_percentage
+							? { type: "percentage", value: existingItem.discount_percentage }
+							: existingItem.discount_amount
+								? { type: "amount", value: existingItem.discount_amount }
+								: {},
+						enforceStock,
+					})
+
+					if (!mergeValidation?.ok) {
+						showWarning(mergeValidation?.message || __("Unable to update item."))
+						return false
+					}
+
+					const totalQty = mergeItems(cartItem, existingItem, targetQty)
+					showSuccess(__('Merged into {0} (Total: {1})', [finalUom, totalQty]))
 					return true
 				}
 
-				// Apply UOM change with new rate
-				try {
-					await applyUomChange(cartItem, updates.uom, updates.quantity ?? cartItem.quantity)
-				} catch {
-					// Fallback: just change UOM without rate update
-					cartItem.uom = updates.uom
+				cartItem.uom = finalUom
+
+				const uomData = prepared.item?.item_uoms?.find(
+					(u) => u.uom === finalUom
+				) || cartItem.item_uoms?.find((u) => u.uom === finalUom)
+
+				cartItem.conversion_factor =
+					prepared.conversion_factor ||
+					prepared.item?.conversion_factor ||
+					uomData?.conversion_factor ||
+					1
+
+				if (updates.rate !== undefined) {
+					cartItem.rate = updates.rate
+				}
+
+				if (updates.price_list_rate !== undefined) {
+					cartItem.price_list_rate = updates.price_list_rate
 				}
 			}
 
-			// Validate stock if quantity is being increased
-			if (updates.quantity !== undefined && updates.quantity > cartItem.quantity
-				&& settingsStore.shouldEnforceStockValidation() && shouldValidateItemStock(cartItem)) {
-				const check = checkStockAvailability(cartItem, updates.quantity)
-				if (!check.available) {
-					throw new Error(check.error)
-				}
-			}
+			if (updates.quantity !== undefined)
+				cartItem.quantity = updates.quantity
 
-			// Apply other updates
-			if (updates.quantity !== undefined) cartItem.quantity = updates.quantity
-			if (updates.warehouse !== undefined) cartItem.warehouse = updates.warehouse
-			if (updates.discount_percentage !== undefined) cartItem.discount_percentage = updates.discount_percentage
-			if (updates.discount_amount !== undefined) cartItem.discount_amount = updates.discount_amount
-			if (updates.rate !== undefined) cartItem.rate = updates.rate
-			if (updates.price_list_rate !== undefined) cartItem.price_list_rate = updates.price_list_rate
-			if (updates.serial_no !== undefined) cartItem.serial_no = updates.serial_no
-			// Track manual rate edits for audit purposes
-			if (updates.is_rate_manually_edited !== undefined) cartItem.is_rate_manually_edited = updates.is_rate_manually_edited
-			if (updates.original_rate !== undefined) cartItem.original_rate = updates.original_rate
+			if (updates.warehouse !== undefined)
+				cartItem.warehouse = updates.warehouse
+
+			if (updates.discount_percentage !== undefined)
+				cartItem.discount_percentage = updates.discount_percentage
+
+			if (updates.discount_amount !== undefined)
+				cartItem.discount_amount = updates.discount_amount
+
+			if (updates.rate !== undefined)
+				cartItem.rate = updates.rate
+
+			if (updates.price_list_rate !== undefined)
+				cartItem.price_list_rate = updates.price_list_rate
+
+			if (updates.serial_no !== undefined)
+				cartItem.serial_no = updates.serial_no
+
+			if (updates.is_rate_manually_edited !== undefined)
+				cartItem.is_rate_manually_edited =
+					updates.is_rate_manually_edited
+
+			if (updates.original_rate !== undefined)
+				cartItem.original_rate = updates.original_rate
 
 			recalculateItem(cartItem)
 			rebuildIncrementalCache()
+
 			showSuccess(__('{0} updated', [cartItem.item_name]))
 			return true
 		} catch (error) {
@@ -1374,12 +1537,6 @@ export const usePOSCartStore = defineStore("posCart", () => {
 		// Only process offers if we have a POS profile
 		// posProfile.value is the profile NAME (a string), not an object
 		if (!posProfile.value) {
-			return
-		}
-
-		// Skip offer processing if POS Profile has ignore_pricing_rule enabled
-		const shiftStore = usePOSShiftStore()
-		if (shiftStore.currentProfile?.ignore_pricing_rule) {
 			return
 		}
 
