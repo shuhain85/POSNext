@@ -586,6 +586,27 @@ class UomPolicyAdapter {
 			}
 		}
 
+		// 🔹 NEW: If backend already sent policy, trust it
+		if (result?._uom_policy) {
+			const policy = this.cachePolicy(
+				result.item_code,
+				result._uom_policy,
+				result,
+			)
+
+			const normalizedItem = await this.normalizeItemAsync(result, options)
+
+			return {
+				ok: true,
+				allowed: true,
+				reason: null,
+				item_code: result.item_code,
+				uom: result.uom,
+				result: normalizedItem,
+				policy,
+			}
+		}
+
 		const itemCode = this.getItemCode(result)
 		const uom = this.normalize(
 			result.uom || result.barcode_uom || result.scanned_uom || result.stock_uom,

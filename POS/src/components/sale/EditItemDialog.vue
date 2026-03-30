@@ -263,11 +263,18 @@
 											<FeatherIcon name="alert-triangle" class="h-4 w-4 mt-0.5 flex-shrink-0" />
 											<div>
 												<p class="font-semibold">{{ stockState.title }}</p>
-												<p class="mt-1">{{ __('Available: {0} {1}', [currentAvailableStock, currentStockUom]) }}</p>
-												<p>{{ __('Required: {0} {1}', [currentRequiredStockQty, currentStockUom]) }}</p>
+												<p class="mt-1">{{ __('Available: {0} {1}', [stockState.available, stockState.stockUom]) }}</p>
+												<p>{{ __('Required: {0} {1}', [stockState.required, stockState.stockUom]) }}</p>
 												<p class="mt-1">{{ stockState.note }}</p>
 											</div>
 										</div>
+									</div>
+
+									<div
+										v-if="discountValidation && discountValidation.ok === false"
+										class="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+									>
+										{{ discountValidation.message }}
 									</div>
 
 							<!-- Actions - matching frappe-ui Dialog style -->
@@ -277,10 +284,10 @@
 									<Button
 										variant="solid"
 										@click="updateItem"
-										:disabled="!hasStock || isCheckingStock"
+										:disabled="isUpdateBlocked"
 									>
 										<span v-if="isCheckingStock">{{ __('Checking Stock...') }}</span>
-										<span v-else-if="!hasStock">{{ settingsStore.shouldEnforceStockValidation() ? __('Cannot Sell') : __('Low Stock') }}</span>
+										<span v-else-if="stockState?.blocked">{{ settingsStore.shouldEnforceStockValidation() ? __('Cannot Sell') : __('Low Stock') }}</span>
 										<span v-else>{{ __('Update Item') }}</span>
 									</Button>
 								</div>
@@ -298,7 +305,10 @@ import { useInvoice } from "@/composables/useInvoice"
 import { useToast } from "@/composables/useToast"
 import { usePOSSettingsStore } from "@/stores/posSettings"
 import { useSerialNumberStore } from "@/stores/serialNumber"
-import { getItemStock } from "@/utils/stockValidator"
+import { getItemStock } from "@/utils/pos_connector/stockValidator"
+import posConnector from "@/utils/pos_connector"
+import { getStockDisplayState } from "@/utils/pos_connector/stockHint"
+import { validateDiscount } from "@/utils/pos_connector/discountPolicy"
 import { formatCurrency as formatCurrencyUtil, getCurrencySymbol, roundCurrency } from "@/utils/currency"
 import { Button, FeatherIcon } from "frappe-ui"
 import { computed, ref, watch } from "vue"
@@ -343,6 +353,7 @@ const originalSerials = ref([])
 const originalPriceListRate = ref(0)
 const currentAvailableStock = ref(0)
 const stockValidationMessage = ref("")
+const validationResult = ref(null)
 
 const show = computed({
 	get: () => props.modelValue,
@@ -421,25 +432,39 @@ const currentStockUom = computed(() => {
 	return localItem.value?.stock_uom || localUom.value || __("Nos")
 })
 
-const stockState = computed(() => {
-	if (!localItem.value) return null
-	const availableStock = Number(currentAvailableStock.value || 0)
-	const requiredStockQty = Number(currentRequiredStockQty.value || 0)
+const selectedStockOption = computed(() => ({
+	uom: localUom.value,
+	conversion_factor: currentConversionFactor.value,
+}))
 
-	if (requiredStockQty <= availableStock) return null
+const stockState = computed(() =>
+	getStockDisplayState({
+		item: {
+			...(localItem.value || {}),
+			actual_qty: currentAvailableStock.value,
+			stock_qty: currentAvailableStock.value,
+		},
+		selectedOption: selectedStockOption.value,
+		quantity: localQuantity.value,
+		enforceStockValidation: settingsStore.shouldEnforceStockValidation(),
+		validationResult: validationResult.value,
+	}),
+)
 
-	const blocked = settingsStore.shouldEnforceStockValidation()
-	return {
-		available: availableStock,
-		required: requiredStockQty,
-		stockUom: currentStockUom.value,
-		blocked,
-		title: blocked ? __("Insufficient stock") : __("Low stock"),
-		note: blocked ? __("Cannot sell") : __("Sale allowed"),
-		panelClass: blocked
-			? "bg-orange-50 text-orange-700 border border-orange-200"
-			: "bg-amber-50 text-amber-700 border border-amber-200",
-	}
+const discountValidation = computed(() =>
+	validateDiscount({
+		item: localItem.value,
+		rate: localRate.value,
+		discount_type: discountType.value,
+		discount_value: discountValue.value || 0,
+	}),
+)
+
+const isUpdateBlocked = computed(() => {
+	if (isCheckingStock.value) return true
+	if (stockState.value?.blocked) return true
+	if (discountValidation.value?.ok === false) return true
+	return false
 })
 
 const discountTypeOptions = computed(() => [
@@ -486,6 +511,7 @@ watch(
 			)
 			hasStock.value = true
 			isCheckingStock.value = false
+			validationResult.value = null
 
 			calculateTotals()
 			validateCurrentStock()
@@ -509,6 +535,16 @@ function validateCurrentStock({ showToast = false } = {}) {
 	stockValidationMessage.value = requiredStockQty > availableStock
 		? (blocked ? __("Cannot sell") : __("Sale allowed"))
 		: ""
+	validationResult.value = requiredStockQty > availableStock
+		? {
+			reason: "out_of_stock",
+			stock: {
+				available_qty: availableStock,
+				actual_qty: availableStock,
+				required_qty: requiredStockQty,
+			},
+		  }
+		: null
 
 	if (showToast && requiredStockQty > availableStock) {
 		const message = __('Available: {0} {1} | Required: {2} {1}', [
@@ -738,7 +774,8 @@ async function updateItem() {
 
 		const maxDiscount = settingsStore.maxDiscountAllowed
 		if (maxDiscount > 0 && localRate.value < originalPriceListRate.value) {
-			const discountPercent = ((originalPriceListRate.value - localRate.value) / originalPriceListRate.value) * 100
+			const discountPercent =
+				((originalPriceListRate.value - localRate.value) / originalPriceListRate.value) * 100
 			const roundedDiscount = Math.round(discountPercent * 100) / 100
 
 			if (roundedDiscount > maxDiscount) {
@@ -758,24 +795,63 @@ async function updateItem() {
 		return
 	}
 
+	if (discountValidation.value?.ok === false) {
+		showError(discountValidation.value.message)
+		return
+	}
+
+	const connectorResult = await posConnector.prepareCartLine({
+		item: {
+			...localItem.value,
+			warehouse: localWarehouse.value,
+			actual_qty: currentAvailableStock.value,
+			stock_qty: currentAvailableStock.value,
+		},
+		qty: localQuantity.value,
+		uom: localUom.value,
+		rate: localRate.value,
+		discount: {
+			type: discountType.value,
+			value: discountValue.value || 0,
+		},
+		warehouse: localWarehouse.value,
+	})
+
+	if (!connectorResult?.ok) {
+		validationResult.value = connectorResult
+		showError(getUpdateValidationMessage(connectorResult))
+		return
+	}
+
 	const updatedItem = {
 		...localItem.value,
+		...connectorResult,
 		quantity: localQuantity.value,
-		uom: localUom.value,
+		qty: localQuantity.value,
+		uom: connectorResult.uom || localUom.value,
 		rate: localRate.value,
 		price_list_rate: originalPriceListRate.value,
 		warehouse: localWarehouse.value,
 		discount_percentage:
 			discountType.value === "percentage" ? discountValue.value : 0,
 		discount_amount:
-			discountType.value === "amount" ? discountValue.value : 0,
+			connectorResult.discount_amount ??
+			(discountType.value === "amount" ? discountValue.value : 0),
 		is_rate_manually_edited: isRateManuallyEdited ? 1 : 0,
 		original_rate: isRateManuallyEdited ? originalPriceListRate.value : null,
+	}
+
+	if (connectorResult.stockResult) {
+		updatedItem.stockResult = connectorResult.stockResult
+	}
+	if (connectorResult.conversion_factor) {
+		updatedItem.conversion_factor = connectorResult.conversion_factor
 	}
 
 	if (localItem.value.has_serial_no) {
 		updatedItem.serial_no = localSerials.value.join("\n")
 		updatedItem.quantity = localSerials.value.length
+		updatedItem.qty = localSerials.value.length
 
 		if (removedSerials.value.length > 0) {
 			serialStore.returnSerials(localItem.value.item_code, removedSerials.value)

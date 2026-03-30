@@ -5,6 +5,7 @@ import json
 from collections import defaultdict
 
 import frappe
+from pos_branch_helper.uom_policy.pos_api import validate_pos_barcode_uom
 from erpnext.stock.doctype.batch.batch import get_batch_qty
 from erpnext.stock.get_item_details import get_item_details as erpnext_get_item_details
 from frappe import _
@@ -415,11 +416,36 @@ def search_by_barcode(barcode, pos_profile):
 			if resolved_item_data:
 				item_details.update(resolved_item_data)
 
+		# ------------------------------------------------------------------
+		# NEW: Validate barcode UOM via pos_branch_helper
+		# ------------------------------------------------------------------
+		try:
+			validated = validate_pos_barcode_uom(
+				item_code=item_code,
+				uom=item_details.get("uom") or item_details.get("stock_uom"),
+				mode="selling",
+			)
+
+			payload = validated or {}
+			allowed = payload.get("allowed", False)
+			policy = payload.get("policy")
+
+			if not allowed:
+				frappe.throw(_("Scanned UOM is not allowed for this item"))
+
+			# Attach policy to item
+			if policy:
+				item_details["_uom_policy"] = policy
+
+		except Exception as e:
+			frappe.log_error(frappe.get_traceback(), "Barcode UOM Validation Error")
+			frappe.throw(_("Barcode validation failed: {0}").format(str(e)))
+
 		return item_details
+
 	except Exception as e:
 		frappe.log_error(frappe.get_traceback(), "Search by Barcode Error")
 		frappe.throw(_("Error searching by barcode: {0}").format(str(e)))
-
 
 @frappe.whitelist()
 def get_item_stock(item_code, warehouse):

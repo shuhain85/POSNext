@@ -185,8 +185,12 @@
 							</svg>
 							<div class="text-xs leading-5">
 								<p class="font-semibold">{{ stockState.title }}</p>
-								<p>{{ __('Available: {0} {1}', [stockState.available, stockState.stockUom]) }}</p>
-								<p>{{ __('Required: {0} {1}', [stockState.required, stockState.stockUom]) }}</p>
+								<p v-if="stockState.available !== null && stockState.available !== undefined">
+									{{ __('Available: {0} {1}', [stockState.available, stockState.stockUom]) }}
+								</p>
+								<p v-if="stockState.required !== null && stockState.required !== undefined">
+									{{ __('Required: {0} {1}', [stockState.required, stockState.stockUom]) }}
+								</p>
 								<p v-if="stockState.note" class="font-medium">{{ stockState.note }}</p>
 							</div>
 						</div>
@@ -246,7 +250,7 @@
 					variant="solid"
 					theme="blue"
 					@click="confirm"
-					:disabled="!selectedOption || (mode === 'uom' && stockState?.blocked)"
+					:disabled="!selectedOption || (mode === 'uom' && isConfirmBlocked)"
 				>
 					{{ confirmButtonText }}
 				</Button>
@@ -261,6 +265,8 @@ import { Button, Dialog } from "frappe-ui"
 import { createResource } from "frappe-ui"
 import { computed, ref, watch } from "vue"
 import { usePOSSettingsStore } from "@/stores/posSettings"
+import posConnector from "@/utils/pos_connector"
+import { getStockHint, getStockDisplayState } from "@/utils/pos_connector/stockHint"
 import TranslatedHTML from "../common/TranslatedHTML.vue"
 import { offlineState } from "@/utils/offline/offlineState"
 import { getCachedVariants, cacheItems } from "@/utils/offline/items"
@@ -293,6 +299,8 @@ const options = ref([])
 const selectedOption = ref(null)
 const quantity = ref(1)
 const selectedAttributes = ref({}) // For variant attribute selection
+const validationResult = ref(null)
+let validationTimer = null
 
 // Computed properties for dialog customization
 const dialogTitle = computed(() => {
@@ -311,30 +319,23 @@ const confirmButtonText = computed(() => {
 	return props.mode === "variant" ? __("Add to Cart") : __("Add to Cart")
 })
 
+const isConfirmBlocked = computed(() => {
+	if (props.mode !== "uom") return false
+	if (!selectedOption.value) return true
+	if (!validationResult.value) return false
+	return Boolean(validationResult.value.blocked)
+})
+
 const stockState = computed(() => {
-	if (props.mode !== "uom" || !selectedOption.value || !props.item) return null
+	if (props.mode !== "uom") return null
 
-	const availableStock = Number(props.item.actual_qty ?? props.item.stock_qty ?? 0)
-	const conversionFactor = Number(selectedOption.value.conversion_factor || 1)
-	const requiredStockQty = (Number(quantity.value || 1) || 1) * conversionFactor
-	const stockUom = props.item.stock_uom || selectedOption.value.uom
-	const enforceStockValidation = settingsStore.shouldEnforceStockValidation()
-
-	if (requiredStockQty <= availableStock) {
-		return null
-	}
-
-	return {
-		available: availableStock,
-		required: requiredStockQty,
-		stockUom,
-		blocked: enforceStockValidation,
-		title: enforceStockValidation ? __("Insufficient stock") : __("Low stock"),
-		note: enforceStockValidation ? "" : __("Sale allowed"),
-		panelClass: enforceStockValidation
-			? "bg-orange-50 text-orange-700 border border-orange-200"
-			: "bg-amber-50 text-amber-700 border border-amber-200",
-	}
+	return getStockDisplayState({
+		item: props.item,
+		selectedOption: selectedOption.value,
+		quantity: quantity.value,
+		enforceStockValidation: settingsStore.shouldEnforceStockValidation(),
+		validationResult: validationResult.value,
+	})
 })
 
 function isOptionStockValid(option, qty = quantity.value) {
@@ -525,6 +526,7 @@ async function loadOptions() {
 				// Default to first option (stock UOM)
 				selectedOption.value = options.value[0]
 			}
+			validateSelectedUom(selectedOption.value)
 		}
 		loading.value = false
 	}
@@ -538,6 +540,60 @@ watch(matchedVariant, (variant) => {
 		selectedOption.value = null
 	}
 })
+
+watch(quantity, () => {
+	validateQuantity()
+	if (props.mode !== 'uom' || !selectedOption.value) return
+	if (validationTimer) clearTimeout(validationTimer)
+	validationTimer = setTimeout(() => {
+		validateSelectedUom()
+	}, 150)
+})
+
+
+
+async function validateSelectedUom(option = selectedOption.value) {
+	if (props.mode !== "uom" || !props.item || !option) {
+		validationResult.value = null
+		return
+	}
+
+	const enforceStock = settingsStore.shouldEnforceStockValidation()
+	const safeItem = { ...(props.item || {}) }
+	if (!enforceStock) {
+		safeItem.allow_negative_stock = 1
+	}
+
+	try {
+		const result = await posConnector.prepareCartLine({
+			item: safeItem,
+			qty: Number(quantity.value || 1) || 1,
+			uom: option.uom,
+			rate: Number(option.rate || safeItem.rate || safeItem.price_list_rate || 0) || 0,
+			warehouse: safeItem.warehouse || null,
+			discount: {},
+		})
+
+		const reason = result?.reason || null
+		const blockedByUom = reason === "uom_not_allowed"
+		const blockedByStock = enforceStock && !result?.ok && !blockedByUom
+
+		validationResult.value = {
+			ok: Boolean(result?.ok),
+			reason,
+			message: result?.message || null,
+			blocked: blockedByUom || blockedByStock,
+		}
+	} catch (error) {
+		console.error("Error validating selected UOM:", error)
+		validationResult.value = {
+			ok: false,
+			reason: "validation_error",
+			message: error?.message || __("Validation failed"),
+			blocked: true,
+		}
+	}
+}
 
 function formatConversionFactor(value) {
 	const factor = Number(value || 1)
@@ -608,15 +664,18 @@ function selectAttribute(attributeName, value) {
 }
 
 function selectOption(option) {
-	if (!isOptionStockValid(option)) return
 	selectedOption.value = option
+	validateSelectedUom(option)
 }
 
-function confirm() {
+async function confirm() {
 	if (!selectedOption.value) return
 
-	if (props.mode === 'uom' && !isOptionStockValid(selectedOption.value)) {
-		return
+	if (props.mode === 'uom') {
+		await validateSelectedUom(selectedOption.value)
+		if (isConfirmBlocked.value) {
+			return
+		}
 	}
 
 	// Emit first, let parent decide if dialog should close
