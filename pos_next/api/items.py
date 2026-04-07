@@ -2065,6 +2065,396 @@ def get_brands(pos_profile):
 		frappe.throw(_("Error fetching brands: {0}").format(str(e)))
 
 
+# ==========================================
+# Legacy/Helper Functions
+# ==========================================
+
+
+@frappe.whitelist()
+def apply_offers(invoice_data, selected_offers=None):
+    """Calculate and apply promotional offers using ERPNext Pricing Rules.
+
+    Args:
+            invoice_data (str | dict): Sales Invoice payload used for offer evaluation.
+            selected_offers (str | list | None): Optional collection of Pricing Rule names.
+                    When provided, results are filtered to only include these rules.
+                    ERPNext handles all conflict resolution based on priority.
+    """
+    try:
+        if isinstance(invoice_data, str):
+            invoice_data = json.loads(invoice_data or "{}")
+
+        invoice = frappe._dict(invoice_data or {})
+        items = invoice.get("items") or []
+
+        if isinstance(selected_offers, str):
+            try:
+                selected_offers = json.loads(selected_offers)
+            except ValueError:
+                selected_offers = [selected_offers]
+
+        if isinstance(selected_offers, (list, tuple, set)):
+            selected_offer_names = {
+                cstr(name) for name in selected_offers if cstr(name)
+            }
+        else:
+            selected_offer_names = set()
+
+        if not items:
+            return {"items": []}
+
+        if not invoice.get("pos_profile") or not erpnext_apply_pricing_rule:
+            # Either no POS profile supplied or ERPNext promotional engine unavailable
+            return {"items": items}
+
+        profile = frappe.get_cached_doc("POS Profile", invoice.get("pos_profile"))
+
+        # Respect POS Profile's ignore_pricing_rule setting
+        if profile.ignore_pricing_rule:
+            return {"items": items}
+
+        # Batch fetch all item details in a single query (reduces N queries to 1)
+        item_codes = list({item.get("item_code") for item in items if item.get("item_code")})
+        item_details_map = {}
+        if item_codes:
+            item_records = frappe.get_all(
+                "Item",
+                filters={"name": ["in", item_codes]},
+                fields=["name", "item_name", "item_group", "brand", "stock_uom"],
+            )
+            item_details_map = {r.name: r for r in item_records}
+
+        pricing_items = []
+        index_map = []
+        prepared_items = [frappe._dict(row) for row in items]
+
+        for idx, item in enumerate(prepared_items):
+            item_code = item.get("item_code")
+            qty = flt(item.get("qty") or item.get("quantity") or 0)
+
+            if not item_code or qty <= 0:
+                continue
+
+            # Use batch-fetched item details
+            cached = item_details_map.get(item_code)
+
+            conversion_factor = flt(item.get("conversion_factor") or 1) or 1
+            price_list_rate = flt(item.get("price_list_rate") or item.get("rate") or 0)
+
+            pricing_items.append(
+                frappe._dict(
+                    {
+                        "doctype": "Sales Invoice Item",
+                        "name": item.get("name") or f"POS-{idx}",
+                        "item_code": item_code,
+                        "item_name": (
+                            cached.item_name if cached else item.get("item_name")
+                        ),
+                        "item_group": (
+                            cached.item_group if cached else item.get("item_group")
+                        ),
+                        "brand": (cached.brand if cached else item.get("brand")),
+                        "qty": qty,
+                        "stock_qty": qty * conversion_factor,
+                        "conversion_factor": conversion_factor,
+                        "uom": item.get("uom")
+                        or item.get("stock_uom")
+                        or (cached.stock_uom if cached else None),
+                        "stock_uom": item.get("stock_uom")
+                        or (cached.stock_uom if cached else None),
+                        "price_list_rate": price_list_rate,
+                        "base_price_list_rate": price_list_rate,
+                        "rate": flt(item.get("rate") or price_list_rate),
+                        "base_rate": flt(item.get("rate") or price_list_rate),
+                        "discount_percentage": 0,
+                        "discount_amount": 0,
+                        "warehouse": item.get("warehouse") or profile.warehouse,
+                        "parenttype": invoice.get("doctype") or "Sales Invoice",
+                    }
+                )
+            )
+            index_map.append(idx)
+
+            # Clear previously applied promotional metadata if the
+            # current quantity can no longer satisfy the rule.
+            item.discount_percentage = 0
+            item.discount_amount = 0
+            item.pricing_rules = []
+            item.applied_promotional_schemes = []
+
+        if not pricing_items:
+            return {"items": items}
+
+        company_currency = frappe.get_cached_value(
+            "Company", profile.company, "default_currency"
+        )
+
+        # Get customer details if customer is provided
+        customer = invoice.get("customer")
+        customer_group = invoice.get("customer_group")
+        territory = invoice.get("territory")
+
+        if customer and not customer_group:
+            # Fetch customer_group from customer
+            try:
+                customer_data = frappe.get_cached_value(
+                    "Customer", customer, ["customer_group", "territory"], as_dict=1
+                )
+                if customer_data:
+                    customer_group = customer_data.get("customer_group")
+                    if not territory:
+                        territory = customer_data.get("territory")
+            except Exception as e:
+                # Customer lookup failed, will use defaults
+                frappe.log_error(
+                    f"Failed to fetch customer data for {customer}: {e}",
+                    "Customer Data Lookup"
+                )
+
+        # If still no customer_group, use default
+        if not customer_group:
+            customer_group = "All Customer Groups"
+
+        pricing_args = frappe._dict(
+            {
+                "doctype": invoice.get("doctype") or "Sales Invoice",
+                "name": invoice.get("name") or "POS-INVOICE",
+                "is_pos": 1,
+                "company": profile.company,
+                "transaction_date": invoice.get("posting_date") or nowdate(),
+                "posting_date": invoice.get("posting_date") or nowdate(),
+                "currency": invoice.get("currency")
+                or profile.get("currency")
+                or company_currency,
+                "conversion_rate": flt(invoice.get("conversion_rate") or 1) or 1,
+                "plc_conversion_rate": flt(invoice.get("plc_conversion_rate") or 1)
+                or 1,
+                "price_list": invoice.get("price_list")
+                or profile.get("selling_price_list"),
+                "customer": customer,
+                "customer_group": customer_group,
+                "territory": territory,
+                "items": pricing_items,
+            }
+        )
+
+        # Call ERPNext pricing engine - it handles all conflicts based on priority
+        #
+        # Why we pass pricing_args twice:
+        # - 1st param (args): ERPNext extracts and pops 'items' from this, then processes each item individually
+        # - 2nd param (doc): Used by 'mixed_conditions' pricing rules to access the FULL items list
+        #                    for quantity accumulation across different items in the same group
+        #
+        # Example: A rule "Buy 2 from Demo Item Group, get 10% off" with mixed_conditions=1
+        # needs to see ALL items (1 Book + 1 Camera) to know total qty=2, not just each item's qty=1
+        #
+        # See: erpnext/accounts/doctype/pricing_rule/utils.py -> get_qty_and_rate_for_mixed_conditions()
+        pricing_results = erpnext_apply_pricing_rule(pricing_args, doc=pricing_args) or []
+
+        if not pricing_results:
+            return {"items": items}
+
+        raw_rule_names = set()
+        for result in pricing_results:
+            if not result:
+                continue
+            rules = []
+            if erpnext_get_applied_pricing_rules:
+                rules = erpnext_get_applied_pricing_rules(result.get("pricing_rules"))
+            else:
+                raw_rules = result.get("pricing_rules") or []
+                if isinstance(raw_rules, str):
+                    if raw_rules.startswith("["):
+                        rules = json.loads(raw_rules)
+                    else:
+                        rules = [r.strip() for r in raw_rules.split(",") if r.strip()]
+                elif isinstance(raw_rules, (list, tuple, set)):
+                    rules = list(raw_rules)
+            raw_rule_names.update(rules)
+
+        # Build a map of applicable pricing rules from the ERPNext engine results.
+        #
+        # ERPNext has two types of pricing rules:
+        #
+        # 1. Promotional Scheme Rules (promotional_scheme is set):
+        #    - Created automatically when a Promotional Scheme is saved
+        #    - The scheme acts as a "template" that generates one or more Pricing Rules
+        #    - Example: "Summer Sale" scheme creates "PRLE-0001", "PRLE-0002" rules
+        #
+        # 2. Standalone Pricing Rules (promotional_scheme is empty):
+        #    - Created directly as Pricing Rule documents
+        #    - Not linked to any Promotional Scheme
+        #    - Example: A direct "10% off Item X" rule created in Pricing Rule doctype
+        #
+        # We include BOTH types for POS, but exclude coupon_code_based rules
+        # (those require explicit coupon entry and are handled separately).
+        #
+        rule_map = {}
+        if raw_rule_names:
+            rule_records = frappe.get_all(
+                "Pricing Rule",
+                filters={"name": ["in", list(raw_rule_names)]},
+                fields=[
+                    "name",
+                    "promotional_scheme",
+                    "coupon_code_based",
+                    "promotional_scheme_id",
+                    "price_or_product_discount",
+                ],
+            )
+            for record in rule_records:
+                # Skip coupon-based rules (require explicit coupon code entry)
+                if record.coupon_code_based:
+                    continue
+
+                # Include both promotional scheme rules and standalone pricing rules
+                rule_map[record.name] = record
+
+        if selected_offer_names:
+            # Restrict available rules to the ones explicitly selected from the UI.
+            rule_map = {
+                name: details
+                for name, details in rule_map.items()
+                if name in selected_offer_names
+            }
+
+        if not rule_map:
+            return {"items": items}
+
+        applied_rules = set()
+        # Deduplicate free items using a dict keyed by (item_code, pricing_rule).
+        # ERPNext's apply_pricing_rule() returns one result per cart item and for
+        # mixed_conditions rules attaches the same free_item_data to every matching
+        # item's result. ERPNext's own apply_pricing_rule_for_free_items() deduplicates
+        # the same way: {(item_code, pricing_rules): data for data in free_item_data}.
+        free_items_map = {}
+
+        for result, item_index in zip(pricing_results, index_map):
+            if not result:
+                continue
+
+            if erpnext_get_applied_pricing_rules:
+                rule_names = erpnext_get_applied_pricing_rules(
+                    result.get("pricing_rules")
+                )
+            else:
+                raw_rules = result.get("pricing_rules") or []
+                if isinstance(raw_rules, str):
+                    if raw_rules.startswith("["):
+                        rule_names = json.loads(raw_rules)
+                    else:
+                        rule_names = [
+                            r.strip() for r in raw_rules.split(",") if r.strip()
+                        ]
+                elif isinstance(raw_rules, (list, tuple, set)):
+                    rule_names = list(raw_rules)
+                else:
+                    rule_names = []
+
+            applicable_rule_names = [
+                name for name in rule_names or [] if name in rule_map
+            ]
+
+            if not applicable_rule_names:
+                continue
+
+            applied_rules.update(applicable_rule_names)
+
+            item_doc = prepared_items[item_index]
+            qty = flt(item_doc.get("qty") or item_doc.get("quantity") or 0)
+            price_list_rate = flt(
+                result.get("price_list_rate")
+                or item_doc.get("price_list_rate")
+                or item_doc.get("rate")
+                or 0
+            )
+
+            # Get discount from result or fetch from pricing rule
+            discount_percentage = flt(result.get("discount_percentage") or 0)
+            per_unit_discount = flt(result.get("discount_amount") or 0)
+
+            # If ERPNext didn't calculate discount (validate_applied_rule=1),
+            # we need to fetch and apply it manually
+            if (
+                not discount_percentage
+                and not per_unit_discount
+                and applicable_rule_names
+            ):
+                for rule_name in applicable_rule_names:
+                    rule_doc = rule_map.get(rule_name)
+                    if not rule_doc:
+                        continue
+
+                    # Fetch full pricing rule to get discount values
+                    full_rule = frappe.get_cached_doc("Pricing Rule", rule_name)
+
+                    if (
+                        full_rule.rate_or_discount == "Discount Percentage"
+                        and full_rule.discount_percentage
+                    ):
+                        discount_percentage += flt(full_rule.discount_percentage)
+                    elif (
+                        full_rule.rate_or_discount == "Discount Amount"
+                        and full_rule.discount_amount
+                    ):
+                        per_unit_discount += flt(full_rule.discount_amount)
+                    elif full_rule.rate_or_discount == "Rate" and full_rule.rate:
+                        # Apply fixed rate
+                        price_list_rate = flt(full_rule.rate)
+
+            line_discount_amount = 0
+            if discount_percentage and qty and price_list_rate:
+                line_discount_amount = price_list_rate * qty * discount_percentage / 100
+            elif per_unit_discount and qty:
+                line_discount_amount = per_unit_discount * qty
+            else:
+                line_discount_amount = per_unit_discount
+
+            if (
+                not discount_percentage
+                and line_discount_amount
+                and qty
+                and price_list_rate
+            ):
+                base_amount = price_list_rate * qty
+                if base_amount:
+                    discount_percentage = (line_discount_amount / base_amount) * 100
+
+            item_doc.discount_percentage = discount_percentage
+            item_doc.discount_amount = line_discount_amount
+            item_doc.price_list_rate = price_list_rate
+            item_doc.rate = flt(item_doc.get("rate") or price_list_rate)
+            # ERPNext expects pricing_rules as comma-separated string, not a list
+            item_doc.pricing_rules = ",".join(applicable_rule_names) if applicable_rule_names else ""
+
+            item_doc.applied_promotional_schemes = list(
+                {
+                    rule_map[name].promotional_scheme
+                    for name in applicable_rule_names
+                    if rule_map[name].promotional_scheme
+                }
+            )
+
+            for free_item in result.get("free_item_data") or []:
+                rule_name = free_item.get("pricing_rules")
+                if not rule_name or rule_name not in rule_map:
+                    continue
+                free_item_doc = frappe._dict(free_item)
+                free_item_doc.applied_promotional_scheme = rule_map[
+                    rule_name
+                ].promotional_scheme
+                free_items_map[(free_item.get("item_code"), rule_name)] = free_item_doc
+
+        return {
+            "items": [dict(item) for item in prepared_items],
+            "free_items": [dict(item) for item in free_items_map.values()],
+            "applied_pricing_rules": sorted(applied_rules),
+        }
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "Apply Offers Error")
+        frappe.throw(_("Error applying offers: {0}").format(str(e)))
+
+
 @frappe.whitelist()
 def get_stock_quantities(item_codes, warehouse):
 	"""
