@@ -2241,6 +2241,8 @@ async function handleErrorRetry() {
 }
 
 async function handlePaymentCompleted(paymentData) {
+	console.log("POS HANDLE PAYMENT RECEIVED", JSON.parse(JSON.stringify(paymentData)))
+	console.log("POS CART PAYMENTS AFTER COPY", JSON.parse(JSON.stringify(cartStore.payments)))
 	try {
 		const customerValue = cartStore.customer?.name || cartStore.customer;
 		if (!customerValue && !shiftStore.profileCustomer) {
@@ -2250,8 +2252,9 @@ async function handlePaymentCompleted(paymentData) {
 			return;
 		}
 
-		cartStore.payments = [];
 		if (paymentData.payments && Array.isArray(paymentData.payments)) {
+			cartStore.payments = [];
+
 			paymentData.payments.forEach((p) => {
 				cartStore.payments.push({
 					mode_of_payment: p.mode_of_payment,
@@ -2260,7 +2263,7 @@ async function handlePaymentCompleted(paymentData) {
 				});
 			});
 		}
-
+		console.log("POS CART PAYMENTS AFTER COPY", JSON.parse(JSON.stringify(cartStore.payments)))
 		// Store sales team data if provided
 		if (paymentData.sales_team && Array.isArray(paymentData.sales_team)) {
 			cartStore.salesTeam = paymentData.sales_team;

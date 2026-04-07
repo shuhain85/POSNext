@@ -123,6 +123,7 @@ export const usePOSCartStore = defineStore("posCart", () => {
 	const selectionMode = ref("uom") // 'uom' or 'variant'
 	const currentDraftId = ref(null)
 	const targetDoctype = ref("Sales Invoice")
+	const isPaymentSubmitting = ref(false)
 
 	// Offer processing state management
 	const offerProcessingState = ref({
@@ -473,27 +474,56 @@ export const usePOSCartStore = defineStore("posCart", () => {
 	}
 
 	async function submitInvoice() {
-		if (invoiceItems.value.length === 0) {
-			showWarning(__("Cart is empty"))
-			return
-		}
-		if (!customer.value) {
-			showWarning(__("Please select a customer"))
-			return
-		}
+		isPaymentSubmitting.value = true
 
-		sanitizeDocumentDiscountState()
+		try {
+			if (invoiceItems.value.length === 0) {
+				showWarning(__("Cart is empty"))
+				return
+			}
 
-		const result = await baseSubmitInvoice(
-			targetDoctype.value,
-			deliveryDate.value,
-			writeOffAmount.value
-		)
+			if (!customer.value) {
+				showWarning(__("Please select a customer"))
+				return
+			}
 
-		if (result) {
-			writeOffAmount.value = 0
+			// CRITICAL: freeze offer sync during payment submission
+			debouncedProcessOffers.cancel()
+			offerQueue.cancel()
+
+			sanitizeDocumentDiscountState()
+
+			console.log(
+				"CART BEFORE BASE SUBMIT",
+				JSON.parse(
+					JSON.stringify({
+						payments: payments.value,
+						salesTeam: salesTeam.value,
+						additionalDiscount: additionalDiscount.value,
+						customer: customer.value,
+						items: invoiceItems.value,
+						grandTotal: grandTotal.value,
+						targetDoctype: targetDoctype.value,
+						deliveryDate: deliveryDate.value,
+						writeOffAmount: writeOffAmount.value,
+					})
+				)
+			)
+
+			const result = await baseSubmitInvoice(
+				targetDoctype.value,
+				deliveryDate.value,
+				writeOffAmount.value
+			)
+
+			if (result) {
+				writeOffAmount.value = 0
+			}
+
+			return result
+		} finally {
+			isPaymentSubmitting.value = false
 		}
-		return result
 	}
 
 	async function createSalesOrder() {
@@ -581,6 +611,8 @@ export const usePOSCartStore = defineStore("posCart", () => {
 		let hasDiscounts = false
 
 		invoiceItems.value.forEach((item, index) => {
+			if (item.is_free_item) return
+
 			const serverItem = serverItems[index] || {}
 			const discountPct = Number.parseFloat(serverItem.discount_percentage) || 0
 			const discountAmt = Number.parseFloat(serverItem.discount_amount) || 0
@@ -621,7 +653,11 @@ export const usePOSCartStore = defineStore("posCart", () => {
 		})
 
 		// Remove previously-added free item rows (they'll be re-added below if still valid)
-		invoiceItems.value = invoiceItems.value.filter(item => !item.is_free_item)
+		for (let i = invoiceItems.value.length - 1; i >= 0; i--) {
+			if (invoiceItems.value[i].is_free_item) {
+				invoiceItems.value.splice(i, 1)
+			}
+		}
 
 		// Early return if no free items
 		if (!Array.isArray(freeItems) || freeItems.length === 0) {
@@ -663,7 +699,6 @@ export const usePOSCartStore = defineStore("posCart", () => {
 					conversion_factor: freeItem.conversion_factor || 1,
 					is_free_item: 1,
 					free_qty: freeQty,
-					pricing_rules: freeItem.pricing_rules || null,
 				})
 			}
 		}
@@ -1695,11 +1730,13 @@ export const usePOSCartStore = defineStore("posCart", () => {
 
 		// === ONLINE MODE ===
 		// Get current profile from posProfile
+		const profileDoc = shiftStore.currentProfile || {}
+
 		const currentProfile = {
 			customer: customer.value?.name || customer.value,
-			company: posProfile.value.company,
-			selling_price_list: posProfile.value.selling_price_list,
-			currency: posProfile.value.currency,
+			company: profileDoc.company,
+			selling_price_list: profileDoc.selling_price_list,
+			currency: profileDoc.currency,
 		}
 		try {
 			// 1. Identify invalid offers to remove (client-side check)
@@ -1941,6 +1978,7 @@ export const usePOSCartStore = defineStore("posCart", () => {
 			() => customer.value?.name || customer.value,
 		],
 		(_newVals, oldVals) => {
+			if (isPaymentSubmitting.value) return
 			// Skip if this is initial render with empty cart
 			if (!oldVals && invoiceItems.value.length === 0) {
 				return

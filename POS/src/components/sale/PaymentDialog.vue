@@ -2112,6 +2112,12 @@ watch(
 watch(show, (newVal) => {
 	if (newVal) {
 		// Reset state when dialog opens (but NOT customerBalance - it's pre-fetched)
+		log.debug("PAYMENT DIALOG OPEN RESET", {
+			show: newVal,
+			beforeReset: JSON.parse(JSON.stringify(paymentEntries.value)),
+			items: props.items?.length,
+			total: props.grandTotal
+		})
 		paymentEntries.value = []
 		customAmount.value = ""
 		numpadClear()
@@ -2525,6 +2531,7 @@ function addCreditAccountPayment() {
 		"[PaymentDialog] Emitting credit sale payment-completed:",
 		paymentData,
 	)
+	
 	emit("payment-completed", paymentData)
 	show.value = false
 }
@@ -2576,15 +2583,23 @@ function completePayment() {
 		sales_team:
 			selectedSalesPersons.value.length > 0 ? selectedSalesPersons.value : null,
 		delivery_date: isSalesOrder.value ? deliveryDate.value : null,
-		// Write-off data
 		write_off_amount: writeOffAmount.value,
 		is_write_off: writeOffAmount.value > 0,
 	}
 
-	log.debug("[PaymentDialog] Emitting payment-completed:", paymentData)
+	console.log("PD COMPLETE EMIT", JSON.parse(JSON.stringify({
+		payments: paymentEntries.value,
+		totalPaid: totalPaid.value,
+		remainingAmount: remainingAmount.value,
+		writeOffAmount: writeOffAmount.value,
+		localAdditionalDiscount: localAdditionalDiscount.value,
+		calculatedAdditionalDiscount: calculatedAdditionalDiscount.value,
+		paymentData,
+	})))
+
+	console.log("PD FINAL PAYLOAD", JSON.parse(JSON.stringify(paymentData)))
 
 	emit("payment-completed", paymentData)
-
 	show.value = false
 }
 

@@ -970,9 +970,19 @@ export function useInvoice() {
 					}))
 				}
 
+				console.log(
+					"USEINVOICE STEP1 REQUEST",
+					JSON.parse(JSON.stringify(invoiceData))
+				)
+
 				const draftInvoice = await updateInvoiceResource.submit({
 					data: invoiceData,
 				})
+
+				console.log(
+					"USEINVOICE STEP1 RESPONSE",
+					JSON.parse(JSON.stringify(draftInvoice))
+				)
 
 				let invoiceDoc = draftInvoice
 				if (
@@ -996,6 +1006,10 @@ export function useInvoice() {
 				}
 
 				try {
+					console.log("USEINVOICE SUBMIT STEP2", JSON.parse(JSON.stringify({
+						invoiceDoc,
+						submitData,
+					})))
 					const result = await submitInvoiceResource.submit({
 						invoice: invoiceDoc,
 						data: submitData,
