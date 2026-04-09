@@ -162,6 +162,45 @@ def validate_manual_rate_edit(item, pos_profile=None, pos_settings_cache=None):
 
     return {"valid": True}
 
+def _build_promotion_audit_remark(invoice_doc):
+    lines = []
+
+    for row in invoice_doc.get("items", []):
+        pricing_rules = cstr(row.get("pricing_rules") or "").strip()
+        if not pricing_rules:
+            continue
+
+        if flt(row.get("discount_percentage")) > 0:
+            lines.append(
+                f"- {row.item_code} → {flt(row.discount_percentage)}% ({pricing_rules})"
+            )
+        elif flt(row.get("amount")) == 0 and flt(row.get("qty")) > 0:
+            lines.append(
+                f"- {row.item_code} → Free Qty {flt(row.qty)} ({pricing_rules})"
+            )
+
+    if not lines:
+        return
+
+    block = "System Promotions Applied\n" + "\n".join(lines)
+
+    existing = cstr(invoice_doc.get("remarks") or "").strip()
+
+    # remove placeholder defaults
+    if existing.lower() in ("no remarks", "remarks", "none"):
+        existing = ""
+
+    # replace old promo block safely
+    if "System Promotions Applied" in existing:
+        existing = existing.split("System Promotions Applied")[0].strip()
+
+    final_remarks = block if not existing else f"{existing}\n\n{block}"
+
+    invoice_doc.db_set(
+        "remarks",
+        final_remarks.strip(),
+        update_modified=False,
+    )
 
 def log_manual_rate_edit(item, invoice_name, user=None):
     """
@@ -364,8 +403,483 @@ def _set_payment_accounts(payments, company):
                 f"Failed to get payment account for {mode_of_payment}: {e}",
                 "Payment Account Lookup",
             )
+# POS payment rows are authoritative from frontend.
+# ERPNext save/submit hooks may recalculate totals and overwrite
+# paid_amount / outstanding_amount, especially when promotions,
+# free items, or additional discounts modify totals.
+# This helper restores payment child rows and derived paid fields
+# so final invoice status remains Paid when full payment exists.
+
+def _normalize_payment_rows(payments):
+    normalized = []
+    for row in payments or []:
+        normalized.append({
+            "mode_of_payment": row.get("mode_of_payment"),
+            "amount": flt(row.get("amount") or 0),
+            "base_amount": flt(row.get("base_amount") or row.get("amount") or 0),
+            "account": row.get("account"),
+        })
+    return normalized
 
 
+def _payment_rows_match(invoice_doc, incoming_payments):
+    current = _normalize_payment_rows(invoice_doc.get("payments"))
+    incoming = _normalize_payment_rows(incoming_payments)
+    return current == incoming
+
+
+def _recalculate_paid_fields_from_payments(invoice_doc):
+    total_paid = 0.0
+    total_base_paid = 0.0
+
+    for row in invoice_doc.get("payments") or []:
+        total_paid += flt(row.get("amount") or 0)
+        total_base_paid += flt(row.get("base_amount") or row.get("amount") or 0)
+
+    invoice_doc.paid_amount = flt(total_paid)
+    invoice_doc.base_paid_amount = flt(total_base_paid)
+    invoice_doc.outstanding_amount = flt(invoice_doc.grand_total) - flt(total_paid)
+
+
+def _restore_payment_amounts(invoice_doc, incoming_payments):
+    """Restore POS payment rows only when ERPNext changed them."""
+    if not incoming_payments:
+        return False
+
+    changed = not _payment_rows_match(invoice_doc, incoming_payments)
+
+    if changed:
+        invoice_doc.set("payments", [])
+        for row in _normalize_payment_rows(incoming_payments):
+            invoice_doc.append("payments", row)
+
+        _recalculate_paid_fields_from_payments(invoice_doc)
+
+    return changed
+
+
+def _payment_fields_need_persist(invoice_doc):
+    db_paid = flt(invoice_doc.db_get("paid_amount") or 0)
+    db_base_paid = flt(invoice_doc.db_get("base_paid_amount") or 0)
+    db_outstanding = flt(invoice_doc.db_get("outstanding_amount") or 0)
+
+    return (
+        db_paid != flt(invoice_doc.paid_amount)
+        or db_base_paid != flt(invoice_doc.base_paid_amount)
+        or db_outstanding != flt(invoice_doc.outstanding_amount)
+    )
+
+
+def _persist_payment_fields(invoice_doc):
+    if not _payment_fields_need_persist(invoice_doc):
+        return
+
+    invoice_doc.db_set("paid_amount", invoice_doc.paid_amount, update_modified=False)
+    invoice_doc.db_set(
+        "base_paid_amount",
+        invoice_doc.base_paid_amount,
+        update_modified=False,
+    )
+    invoice_doc.db_set(
+        "outstanding_amount",
+        invoice_doc.outstanding_amount,
+        update_modified=False,
+    )
+
+
+def _get_effective_pos_branch(pos_profile):
+    """Resolve branch for POS using custom POS Settings first, then POS Profile."""
+    if not pos_profile:
+        return None
+
+    custom_branch = frappe.db.get_value(
+        "POS Settings",
+        {"pos_profile": pos_profile, "enabled": 1},
+        "custom_branch",
+    )
+    if custom_branch:
+        return custom_branch
+
+    profile_branch = frappe.db.get_value("POS Profile", pos_profile, "branch")
+    if profile_branch:
+        return profile_branch
+
+    return None
+
+
+def _set_branch_naming_series(invoice_doc, pos_profile=None):
+    """Force naming series from branch before first save."""
+    if invoice_doc.doctype != "Sales Invoice":
+        return
+
+    if invoice_doc.get("name"):
+        return
+
+    branch = invoice_doc.get("branch") or _get_effective_pos_branch(pos_profile)
+    if not branch:
+        return
+
+    branch_abbr = frappe.db.get_value("Branch", branch, "custom_naming_abbr")
+    if not branch_abbr:
+        return
+
+    invoice_doc.naming_series = f"ACC-{branch_abbr}-SINV-.YYYY.-"
+
+
+def _get_item_discount_policy_flags(item_code):
+    """Resolve authoritative discount policy for an item."""
+    if not item_code:
+        return {"discount_allowed": 1, "is_discount_locked": 0}
+
+    # Preferred: use custom policy service if available
+    try:
+        from pos_branch_helper.discount_policy.service import get_item_discount_policy
+
+        policy = get_item_discount_policy(item_code) or {}
+        return {
+            "discount_allowed": cint(policy.get("discount_allowed", 1)),
+            "is_discount_locked": cint(policy.get("is_discount_locked", 0)),
+        }
+    except Exception:
+        pass
+
+    # Fallback: direct Item fields if they exist
+    try:
+        meta = frappe.get_meta("Item")
+        has_discount_allowed = meta.has_field("discount_allowed")
+        has_discount_locked = meta.has_field("is_discount_locked")
+
+        if has_discount_allowed or has_discount_locked:
+            values = frappe.db.get_value(
+                "Item",
+                item_code,
+                [
+                    "discount_allowed" if has_discount_allowed else "name",
+                    "is_discount_locked" if has_discount_locked else "name",
+                ],
+                as_dict=True,
+            ) or {}
+
+            return {
+                "discount_allowed": cint(values.get("discount_allowed", 1)),
+                "is_discount_locked": cint(values.get("is_discount_locked", 0)),
+            }
+    except Exception:
+        pass
+
+    return {"discount_allowed": 1, "is_discount_locked": 0}
+
+
+def _allocate_additional_discount_to_discountable_items(invoice_doc, pos_settings_cache=None):
+    """Distribute document-level additional discount across eligible items only,
+    while enforcing POS Settings max discount ceiling per item.
+
+    Rules:
+    - Existing line discount counts toward the max discount ceiling.
+    - Additional discount can only use the remaining allowed room per item.
+    - Excess requested additional discount is auto-capped.
+    - Protected / locked items remain unchanged.
+    - Invoice-level additional discount fields are cleared after conversion.
+    """
+    if not invoice_doc or invoice_doc.doctype != "Sales Invoice":
+        return
+
+    discount_amount = flt(invoice_doc.get("discount_amount") or 0)
+    discount_pct = flt(invoice_doc.get("additional_discount_percentage") or 0)
+
+    if discount_amount <= 0 and discount_pct <= 0:
+        return
+
+    precision = cint(
+        frappe.get_cached_value("System Settings", None, "currency_precision")
+    ) or 2
+
+    # Read max discount ceiling from cached POS Settings first, fallback to DB.
+    max_discount_allowed = 0.0
+    if pos_settings_cache:
+        max_discount_allowed = flt(
+            pos_settings_cache.get(FIELD_MAX_DISCOUNT_ALLOWED) or 0
+        )
+
+    if max_discount_allowed <= 0 and invoice_doc.get("pos_profile"):
+        max_discount_allowed = flt(
+            frappe.db.get_value(
+                DOCTYPE_POS_SETTINGS,
+                {"pos_profile": invoice_doc.pos_profile},
+                FIELD_MAX_DISCOUNT_ALLOWED,
+            )
+            or 0
+        )
+
+    eligible_rows = []
+    protected_rows = []
+
+    for row in invoice_doc.get("items", []):
+        qty = flt(row.get("qty") or 0)
+        current_rate = flt(row.get("rate") or 0, precision)
+        price_list_rate = flt(row.get("price_list_rate") or current_rate, precision)
+
+        policy = _get_item_discount_policy_flags(row.get("item_code"))
+        is_protected = (
+            cint(policy.get("discount_allowed")) == 0
+            or cint(policy.get("is_discount_locked")) == 1
+        )
+
+        if is_protected or qty <= 0 or current_rate <= 0 or price_list_rate <= 0:
+            protected_rows.append(row)
+            continue
+
+        # Treat price_list_rate as the original/base unit price for ceiling calculation.
+        base_line_total = flt(qty * price_list_rate, precision)
+        current_line_total = flt(qty * current_rate, precision)
+
+        if base_line_total <= 0:
+            protected_rows.append(row)
+            continue
+
+        # Existing effective discount already on the row.
+        current_discount_amount = flt(base_line_total - current_line_total, precision)
+        if current_discount_amount < 0:
+            current_discount_amount = 0
+
+        # Max allowed discount on this row from POS Settings ceiling.
+        max_allowed_discount_amount = flt(
+            base_line_total * max_discount_allowed / 100.0, precision
+        )
+
+        remaining_room = flt(
+            max_allowed_discount_amount - current_discount_amount, precision
+        )
+
+        if remaining_room <= 0:
+            # Item has no remaining room; keep existing line discount unchanged.
+            protected_rows.append(row)
+            continue
+
+        eligible_rows.append({
+            "row": row,
+            "qty": qty,
+            "price_list_rate": price_list_rate,
+            "current_rate": current_rate,
+            "base_line_total": base_line_total,
+            "current_discount_amount": current_discount_amount,
+            "remaining_room": remaining_room,
+            "weight": current_line_total if current_line_total > 0 else base_line_total,
+        })
+
+    # No eligible room anywhere -> just clear invoice-level fields.
+    if not eligible_rows:
+        invoice_doc.discount_amount = 0
+        invoice_doc.additional_discount_percentage = 0
+        invoice_doc.apply_discount_on = "Grand Total"
+        return
+
+    eligible_weight_total = flt(sum(d["weight"] for d in eligible_rows), precision)
+
+    if eligible_weight_total <= 0:
+        invoice_doc.discount_amount = 0
+        invoice_doc.additional_discount_percentage = 0
+        invoice_doc.apply_discount_on = "Grand Total"
+        return
+
+    # Convert additional discount % into amount using only eligible weight total.
+    if discount_amount <= 0 and discount_pct > 0:
+        discount_amount = flt(eligible_weight_total * discount_pct / 100.0, precision)
+
+    # Hard cap requested amount to total remaining room across all eligible items.
+    total_remaining_room = flt(
+        sum(d["remaining_room"] for d in eligible_rows), precision
+    )
+    discount_amount = min(flt(discount_amount, precision), total_remaining_room)
+
+    if discount_amount <= 0:
+        invoice_doc.discount_amount = 0
+        invoice_doc.additional_discount_percentage = 0
+        invoice_doc.apply_discount_on = "Grand Total"
+        return
+
+    # Water-fill distribution with per-item cap.
+    remaining_discount = flt(discount_amount, precision)
+    active_rows = [dict(d, allocated=0.0) for d in eligible_rows]
+
+    while remaining_discount > 0:
+        open_rows = [
+            d for d in active_rows
+            if flt(d["remaining_room"] - d["allocated"], precision) > 0
+        ]
+        if not open_rows:
+            break
+
+        open_weight_total = flt(sum(d["weight"] for d in open_rows), precision)
+        if open_weight_total <= 0:
+            break
+
+        distributed_this_round = 0.0
+
+        for d in open_rows:
+            room_left = flt(d["remaining_room"] - d["allocated"], precision)
+            if room_left <= 0:
+                continue
+
+            share = flt(
+                remaining_discount * (d["weight"] / open_weight_total),
+                precision
+            )
+            give = min(share, room_left)
+
+            if give > 0:
+                d["allocated"] = flt(d["allocated"] + give, precision)
+                distributed_this_round = flt(
+                    distributed_this_round + give, precision
+                )
+
+        if distributed_this_round <= 0:
+            break
+
+        remaining_discount = flt(
+            remaining_discount - distributed_this_round, precision
+        )
+
+        # Prevent tiny rounding residue loop
+        if abs(remaining_discount) < (1 / (10 ** precision)):
+            remaining_discount = 0
+
+    # Apply allocated additional discount to each eligible row
+    for d in active_rows:
+        row = d["row"]
+        qty = d["qty"]
+        price_list_rate = d["price_list_rate"]
+        current_discount_amount = d["current_discount_amount"]
+        extra_discount_amount = flt(d["allocated"], precision)
+
+        final_discount_amount = flt(
+            current_discount_amount + extra_discount_amount,
+            precision
+        )
+
+        per_unit_discount = flt(final_discount_amount / qty, precision) if qty else 0
+        new_rate = flt(max(0, price_list_rate - per_unit_discount), precision)
+
+        row.price_list_rate = price_list_rate
+        row.rate = new_rate
+        row.base_rate = new_rate
+        row.amount = flt(new_rate * qty, precision)
+        row.base_amount = row.amount
+
+        if price_list_rate > 0:
+            row.discount_percentage = flt(
+                ((price_list_rate - new_rate) / price_list_rate) * 100,
+                precision
+            )
+            row.discount_amount = flt(price_list_rate - new_rate, precision)
+        else:
+            row.discount_percentage = 0
+            row.discount_amount = 0
+
+    # Preserve protected rows as-is
+    for row in protected_rows:
+        row.discount_percentage = flt(row.get("discount_percentage") or 0)
+        row.discount_amount = flt(row.get("discount_amount") or 0)
+
+    # Backend becomes source of truth: clear document-level discount after allocation
+    invoice_doc.discount_amount = 0
+    invoice_doc.additional_discount_percentage = 0
+    invoice_doc.apply_discount_on = "Grand Total"
+
+#helper addition discounted to item
+def _preview_additional_discount(invoice_doc, pos_settings_cache=None):
+    """Preview normalized totals without mutating live payment logic."""
+    room_info = _get_available_additional_discount_room(invoice_doc, pos_settings_cache)
+    preview_doc = frappe.copy_doc(invoice_doc)
+    _allocate_additional_discount_to_discountable_items(preview_doc, pos_settings_cache)
+    preview_doc.set_missing_values()
+    preview_doc.calculate_taxes_and_totals()
+
+    original_grand_total = flt(invoice_doc.get("grand_total") or 0)
+    normalized_grand_total = flt(preview_doc.get("grand_total") or 0)
+    normalized_discount_total = flt(
+        original_grand_total - normalized_grand_total
+    )
+
+    return {
+        "can_apply_document_discount": room_info["available_discount_amount"] > 0,
+        "available_discount_amount": room_info["available_discount_amount"],
+        "available_discount_percentage": room_info["available_discount_percentage"],
+        "normalized_discount_total": normalized_discount_total,
+        "normalized_grand_total": normalized_grand_total,
+    }
+
+#helper to calculate remaining room only for discountable items, to assist frontend in decision making before submission
+def _get_available_additional_discount_room(invoice_doc, pos_settings_cache=None):
+    precision = cint(
+        frappe.get_cached_value("System Settings", None, "currency_precision")
+    ) or 2
+
+    max_discount_allowed = 0.0
+    if pos_settings_cache:
+        max_discount_allowed = flt(
+            pos_settings_cache.get(FIELD_MAX_DISCOUNT_ALLOWED) or 0
+        )
+
+    if max_discount_allowed <= 0 and invoice_doc.get("pos_profile"):
+        max_discount_allowed = flt(
+            frappe.db.get_value(
+                DOCTYPE_POS_SETTINGS,
+                {"pos_profile": invoice_doc.pos_profile},
+                FIELD_MAX_DISCOUNT_ALLOWED,
+            ) or 0
+        )
+
+    if max_discount_allowed <= 0:
+        return {
+            "available_discount_amount": 0.0,
+            "available_discount_percentage": 0.0,
+        }
+
+    total_room = 0.0
+    subtotal = 0.0
+
+    for row in invoice_doc.get("items", []):
+        qty = flt(row.get("qty") or 0)
+        current_rate = flt(row.get("rate") or 0, precision)
+        price_list_rate = flt(row.get("price_list_rate") or current_rate, precision)
+
+        policy = _get_item_discount_policy_flags(row.get("item_code"))
+        is_protected = (
+            cint(policy.get("discount_allowed")) == 0
+            or cint(policy.get("is_discount_locked")) == 1
+        )
+
+        if is_protected or qty <= 0 or current_rate <= 0 or price_list_rate <= 0:
+            continue
+
+        base_line_total = flt(qty * price_list_rate, precision)
+        current_line_total = flt(qty * current_rate, precision)
+
+        if base_line_total <= 0:
+            continue
+
+        current_discount_amount = flt(base_line_total - current_line_total, precision)
+        max_allowed_discount_amount = flt(
+            base_line_total * max_discount_allowed / 100.0, precision
+        )
+        remaining_room = flt(
+            max_allowed_discount_amount - current_discount_amount, precision
+        )
+
+        if remaining_room > 0:
+            total_room += remaining_room
+
+        subtotal += current_line_total
+
+    available_discount_percentage = 0.0
+    if subtotal > 0:
+        available_discount_percentage = flt((total_room / subtotal) * 100, precision)
+
+    return {
+        "available_discount_amount": flt(total_room, precision),
+        "available_discount_percentage": available_discount_percentage,
+    }
 # ==========================================
 # Stock Validation Functions
 # ==========================================
@@ -664,12 +1178,43 @@ def validate_return_items(original_invoice_name, return_items, doctype="Sales In
 # Invoice Management (Two-Step Flow)
 # ==========================================
 
+@frappe.whitelist()
+def preview_additional_discount(data):
+    data = json.loads(data) if isinstance(data, str) else data
+    data.setdefault("doctype", "Sales Invoice")
+
+    invoice_doc = frappe.get_doc(data)
+
+    pos_profile = data.get("pos_profile")
+    pos_settings_cache = None
+
+    if pos_profile:
+        pos_settings_cache = frappe.db.get_value(
+            DOCTYPE_POS_SETTINGS,
+            {"pos_profile": pos_profile},
+            [
+                FIELD_ALLOW_USER_TO_EDIT_RATE,
+                FIELD_MAX_DISCOUNT_ALLOWED,
+                FIELD_ALLOW_NEGATIVE_STOCK,
+            ],
+            as_dict=True,
+        )
+
+    invoice_doc.set_missing_values(for_validate=True)
+    invoice_doc.calculate_taxes_and_totals()
+
+    return _preview_additional_discount(invoice_doc, pos_settings_cache)
 
 @frappe.whitelist()
 def update_invoice(data):
     """Create or update invoice draft (Step 1)."""
+# IMPORTANT:
+# Save hooks can mutate POS payment rows after totals recalculation.
+# Restore immediately after draft save so the frontend receives
+# trusted paid values for the submit step.
     try:
         data = json.loads(data) if isinstance(data, str) else data
+        incoming_payments = [dict(p) for p in (data.get("payments") or [])]
 
         pos_profile = data.get("pos_profile")
         doctype = data.get("doctype", "Sales Invoice")
@@ -846,7 +1391,7 @@ def update_invoice(data):
         if doctype == "Sales Invoice":
             invoice_doc.is_pos = 1
             invoice_doc.update_stock = 1
-            if pos_profile_doc and pos_profile_doc.warehouse:
+            if not invoice_doc.get("set_warehouse") and pos_profile_doc and pos_profile_doc.warehouse:
                 invoice_doc.set_warehouse = pos_profile_doc.warehouse
 
         # ========================================================================
@@ -863,40 +1408,38 @@ def update_invoice(data):
 
         invoice_doc.disable_rounded_total = disable_rounded
 
-        # ========================================================================
-        # POPULATE MISSING FIELDS — using for_validate=True intentionally
-        # ========================================================================
-        # ERPNext's set_missing_values() calls set_pos_fields() internally.
-        #
-        # With for_validate=False (the default):
-        #   set_pos_fields() -> update_multi_mode_option() which does:
-        #     1. doc.set("payments", [])          — wipes ALL payment rows
-        #     2. Rebuilds payments from POS Profile template with amount=0
-        #   Result: frontend payment amounts are destroyed before the invoice
-        #   is saved, causing invoices to appear unpaid (outstanding = grand_total).
-        #
-        # With for_validate=True:
-        #   set_pos_fields() skips update_multi_mode_option() entirely,
-        #   and only fills in missing fields (debit_to, currency, write_off_account,
-        #   cost_center, etc.) without overwriting values already set.
-        #   Payment accounts are set separately via _set_payment_accounts() below.
-        #
-        # This is safe on all ERPNext versions because POS Next already sets
-        # the fields that for_validate=True skips:
-        #   - ignore_pricing_rule  → set above (line ~752)
-        #   - customer             → sent from frontend
-        #   - tax_category         → sent from frontend or not needed
-        # ========================================================================
-        invoice_doc.set_missing_values(for_validate=True)
+        # Populate missing fields (company, currency, accounts, etc.)
+        incoming_item_warehouses = {
+            d.get("item_code"): d.get("warehouse")
+            for d in (data.get("items") or [])
+            if d.get("item_code") and d.get("warehouse")
+        }
+        # FINAL BACKEND SANITIZE
+        # Convert document-level additional discount into line-level discount
+        # before totals are recalculated.
+        if doctype == "Sales Invoice":
+            _allocate_additional_discount_to_discountable_items(invoice_doc, pos_settings_cache)
+
+        invoice_doc.set_missing_values()
 
         # Calculate totals and apply discounts (with rounding disabled)
         invoice_doc.calculate_taxes_and_totals()
+        
         if invoice_doc.grand_total is None:
             invoice_doc.grand_total = 0.0
         if invoice_doc.base_grand_total is None:
             invoice_doc.base_grand_total = 0.0
 
-        # Set accounts for payment methods before saving
+        # ERPNext draft recalculation zeroes payment amounts.
+        # Restore raw POS payment values after totals are finalized.
+        for row in invoice_doc.get("items", []):
+            forced_wh = incoming_item_warehouses.get(row.item_code)
+            if forced_wh:
+                row.warehouse = forced_wh
+
+        _restore_payment_amounts(invoice_doc, incoming_payments)
+        
+        # Re-attach accounts after rebuilding payment rows
         _set_payment_accounts(invoice_doc.payments, invoice_doc.company)
 
         # For return invoices, ensure payments are negative
@@ -953,13 +1496,37 @@ def update_invoice(data):
                     if errors:
                         frappe.throw(frappe.as_json({"errors": errors}), frappe.ValidationError)
 
+
+        
+
+        # HARD FORCE branch + naming just before first save
+        if doctype == "Sales Invoice" and pos_profile:
+            effective_branch = _get_effective_pos_branch(pos_profile)
+            if effective_branch:
+                invoice_doc.branch = effective_branch
+                for item in invoice_doc.get("items", []):
+                    item.branch = effective_branch
+
+            if not invoice_doc.get("name"):
+                _set_branch_naming_series(invoice_doc, pos_profile)                
+        
         # Save as draft
+
         invoice_doc.flags.ignore_permissions = True
         frappe.flags.ignore_account_permission = True
         invoice_doc.docstatus = 0
         invoice_doc.save()
 
+        # ERPNext save hooks may mutate POS payment rows.
+        # Hard restore again after save so frontend gets trusted draft values.
+        payments_changed = _restore_payment_amounts(invoice_doc, incoming_payments)
+        _set_payment_accounts(invoice_doc.payments, invoice_doc.company)
+
+        if payments_changed:
+            _persist_payment_fields(invoice_doc)
+
         return invoice_doc.as_dict()
+
     except Exception as e:
         frappe.log_error(frappe.get_traceback(), "Update Invoice Error")
         raise
@@ -1184,6 +1751,11 @@ def check_offline_invoice_synced(offline_id):
 
 @frappe.whitelist()
 def submit_invoice(invoice=None, data=None):
+    # IMPORTANT:
+# ERPNext submit internally recalculates totals and may reset
+# paid_amount/outstanding_amount during GL posting.
+# Final hard restore guarantees POS payment truth after submit,
+# especially for promotional invoices and discount allocations.
     """Submit the invoice (Step 2)."""
     # Handle different calling conventions
     if invoice is None:
@@ -1226,6 +1798,7 @@ def submit_invoice(invoice=None, data=None):
 
     pos_profile = invoice.get("pos_profile")
     doctype = invoice.get("doctype", "Sales Invoice")
+    incoming_payments = [dict(p) for p in (invoice.get("payments") or [])]
 
     # Normalize pricing_rules before processing
     standardize_pricing_rules(invoice.get("items"))
@@ -1272,7 +1845,16 @@ def submit_invoice(invoice=None, data=None):
             invoice_doc = frappe.get_doc(doctype, invoice_name)
         else:
             invoice_doc = frappe.get_doc(doctype, invoice_name)
-            invoice_doc.update(invoice)
+
+            incoming_payments = [dict(p) for p in (invoice.get("payments") or [])]
+
+            scalar_invoice = dict(invoice)
+            scalar_invoice.pop("payments", None)
+            scalar_invoice.pop("items", None)
+            scalar_invoice.pop("taxes", None)
+            scalar_invoice.pop("sales_team", None)
+
+            invoice_doc.update(scalar_invoice)
 
         # Ensure update_stock is set for Sales Invoice
         if doctype == "Sales Invoice":
@@ -1285,21 +1867,19 @@ def submit_invoice(invoice=None, data=None):
         if invoice_doc.get("is_return") and invoice_doc.get("return_against"):
             invoice_doc.update_outstanding_for_self = 0
 
-        # Copy accounting dimensions from POS Profile if not already set
+        # Copy accounting dimensions using custom POS Settings branch first
         if pos_profile and not invoice_doc.get("branch"):
             try:
-                pos_profile_doc = frappe.get_cached_doc("POS Profile", pos_profile)
-                if hasattr(pos_profile_doc, "branch") and pos_profile_doc.branch:
-                    invoice_doc.branch = pos_profile_doc.branch
-                    # Also set branch on all items for GL entries
+                effective_branch = _get_effective_pos_branch(pos_profile)
+                if effective_branch:
+                    invoice_doc.branch = effective_branch
                     for item in invoice_doc.get("items", []):
                         if not item.get("branch"):
-                            item.branch = pos_profile_doc.branch
+                            item.branch = effective_branch
             except Exception as e:
-                # Branch is optional, log and continue
                 frappe.log_error(
-                    f"Failed to set branch from POS Profile {pos_profile}: {e}",
-                    "POS Profile Branch"
+                    f"Failed to set effective branch for POS Profile {pos_profile}: {e}",
+                    "POS Effective Branch"
                 )
 
         # Set accounts for all payment methods before saving
@@ -1373,20 +1953,32 @@ def submit_invoice(invoice=None, data=None):
         # (global Stock Settings, POS Settings, and POS Profile flags)
         _validate_stock_on_invoice(invoice_doc)
 
-        # Allow pure customer-credit POS sales to submit without a payment row.
-        customer_credit_dict = data.get("customer_credit_dict") or invoice.get("customer_credit_dict")
-        redeemed_customer_credit = data.get("redeemed_customer_credit") or invoice.get("redeemed_customer_credit")
-        if redeemed_customer_credit and not invoice_doc.payments:
-            invoice_doc.flags.pos_next_redeemed_customer_credit = flt(redeemed_customer_credit)
-
-        # Save before submit
         invoice_doc.flags.ignore_permissions = True
         frappe.flags.ignore_account_permission = True
-        invoice_doc.save()
-
-        # Submit invoice
         invoice_doc.submit()
+
+        # final hard restore after submit
+        payments_changed = _restore_payment_amounts(invoice_doc, incoming_payments)
+        _set_payment_accounts(invoice_doc.payments, invoice_doc.company)
+
+        if payments_changed or _payment_fields_need_persist(invoice_doc):
+            _recalculate_paid_fields_from_payments(invoice_doc)
+
+            if payments_changed:
+                invoice_doc.flags.ignore_validate_update_after_submit = True
+                invoice_doc.flags.ignore_permissions = True
+                frappe.flags.ignore_account_permission = True
+                invoice_doc.save()
+
+            _persist_payment_fields(invoice_doc)
+
+        invoice_doc.set_status(update=True)
+        invoice_doc.reload()
+        _build_promotion_audit_remark(invoice_doc)
+
+
         invoice_submitted = True
+
         # Handle wallet transaction reversal for returns
         wallet_reversal_ok = False
         if invoice_doc.get("is_return") and invoice_doc.get("return_against"):
@@ -1443,6 +2035,9 @@ def submit_invoice(invoice=None, data=None):
             _complete_offline_sync(sync_record_name, invoice_doc.name)
 
         # Handle credit redemption after successful submission
+        customer_credit_dict = data.get("customer_credit_dict") or invoice.get("customer_credit_dict")
+        redeemed_customer_credit = data.get("redeemed_customer_credit") or invoice.get("redeemed_customer_credit")
+
         if redeemed_customer_credit and customer_credit_dict:
             try:
                 from pos_next.api.credit_sales import redeem_customer_credit

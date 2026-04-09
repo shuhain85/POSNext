@@ -147,51 +147,71 @@
 						</svg>
 						<span>{{ __("Return Invoice") }}</span>
 					</button>
-					<button
-						v-if="canAccessShiftActions && canSwitchToDesk"
-						@click="switchToDesk"
-						class="w-full text-start px-4 py-2.5 text-sm text-gray-700 hover:bg-emerald-50 flex items-center gap-3 transition-colors"
+				<button
+					v-if="canAccessShiftActions && canSwitchToDesk"
+					@click="switchToDesk"
+					class="w-full text-start px-4 py-2.5 text-sm text-gray-700 hover:bg-emerald-50 flex items-center gap-3 transition-colors"
+				>
+					<svg
+						class="w-5 h-5 text-emerald-600"
+						fill="none"
+						stroke="currentColor"
+						viewBox="0 0 24 24"
 					>
-						<svg
-							class="w-5 h-5 text-emerald-600"
-							fill="none"
-							stroke="currentColor"
-							viewBox="0 0 24 24"
-						>
-							<path
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								stroke-width="2"
-								d="M3 7h18M3 12h18M3 17h18"
-							/>
-						</svg>
-						<span>{{ __("Switch To Desk") }}</span>
-					</button>
-					<hr class="my-1 border-gray-100"> 
-					<button
-						@click="lockSession()"
-						class="w-full text-start px-4 py-2.5 text-sm text-gray-700 hover:bg-amber-50 flex items-center gap-3 transition-colors"
+						<path
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							stroke-width="2"
+							d="M3 7h18M3 12h18M3 17h18"
+						/>
+					</svg>
+					<span>{{ __("Switch To Desk") }}</span>
+				</button>
+				<button
+					v-if="canAccessShiftActions"
+					@click="openCustomerDisplay"
+					class="w-full text-start px-4 py-2.5 text-sm text-gray-700 hover:bg-blue-50 flex items-center gap-3 transition-colors"
+				>
+					<svg
+						class="w-5 h-5 text-blue-600"
+						fill="none"
+						stroke="currentColor"
+						viewBox="0 0 24 24"
 					>
-						<svg
-							class="w-5 h-5 text-amber-600"
-							fill="none"
-							stroke="currentColor"
-							viewBox="0 0 24 24"
-						>
-							<path
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								stroke-width="2"
-								d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
-							/>
-						</svg>
-						<span>{{ __("Lock Screen") }}</span>
-					</button>
+						<path
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							stroke-width="2"
+							d="M9.75 17L15 12l-5.25-5M21 12H3"
+						/>
+					</svg>
+					<span>{{ __("Customer Display") }}</span>
+				</button>
+				<hr class="my-1 border-gray-100">
+				<button
+					@click="lockSession()"
+					class="w-full text-start px-4 py-2.5 text-sm text-gray-700 hover:bg-amber-50 flex items-center gap-3 transition-colors"
+				>
+					<svg
+						class="w-5 h-5 text-amber-600"
+						fill="none"
+						stroke="currentColor"
+						viewBox="0 0 24 24"
+					>
+						<path
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							stroke-width="2"
+							d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
+						/>
+					</svg>
+					<span>{{ __("Lock Screen") }}</span>
+				</button>
 				</template>
 				<template #additional-actions>
 					<button
 						v-if="canAccessShiftActions"
-						@click="handleCloseShift()"
+						@click="handleCloseShift"
 						class="w-full text-start px-4 py-2.5 text-sm text-gray-700 hover:bg-orange-50 flex items-center gap-3 transition-colors"
 					>
 						<svg
@@ -479,29 +499,31 @@
 			</div>
 
 			<!-- Payment Dialog -->
-		<PaymentDialog
-			v-model="uiStore.showPaymentDialog"
-			:grand-total="cartStore.grandTotal"
-			:subtotal="cartStore.subtotal"
-			:pos-profile="shiftStore.profileName"
-			:currency="shiftStore.profileCurrency"
-			:is-offline="offlineStore.isOffline"
-			:allow-partial-payment="posSettingsStore.allowPartialPayment"
-			:allow-credit-sale="posSettingsStore.allowCreditSale"
-			:allow-customer-credit-payment="posSettingsStore.allowCustomerCreditPayment"
-			:allow-write-off="posSettingsStore.allowWriteOffChange"
-			:write-off-limit="shiftStore.writeOffLimit"
-			:customer="cartStore.customer"
-			:company="shiftStore.profileCompany"
-			:additional-discount="cartStore.additionalDiscount"
-			:items="cartStore.invoiceItems"
-			:tax-amount="cartStore.totalTax"
-			:discount-amount="cartStore.totalDiscount"
-			:target-doctype="cartStore.targetDoctype"
-			:is-submitting="cartStore.isSubmitting"
-			@payment-completed="handlePaymentCompleted"
-			@update-additional-discount="handleAdditionalDiscountUpdate"
-		/>
+			<PaymentDialog
+				v-model="uiStore.showPaymentDialog"
+				:grand-total="paymentPreview?.normalized_grand_total ?? cartStore.grandTotal"
+				:subtotal="cartStore.subtotal"
+				:pos-profile="shiftStore.profileName"
+				:currency="shiftStore.profileCurrency"
+				:is-offline="offlineStore.isOffline"
+				:allow-partial-payment="posSettingsStore.allowPartialPayment"
+				:allow-credit-sale="posSettingsStore.allowCreditSale"
+				:allow-customer-credit-payment="posSettingsStore.allowCustomerCreditPayment"
+				:allow-write-off="posSettingsStore.allowWriteOffChange"
+				:write-off-limit="shiftStore.writeOffLimit"
+				:customer="cartStore.customer"
+				:company="shiftStore.profileCompany"
+				:additional-discount="cartStore.additionalDiscount"
+				:items="cartStore.invoiceItems"
+				:tax-amount="cartStore.totalTax"
+				:discount-amount="paymentPreview?.normalized_discount_total ?? cartStore.totalDiscount"
+				:available-discount-amount="paymentPreview?.available_discount_amount ?? 0"
+				:available-discount-percentage="paymentPreview?.available_discount_percentage ?? 0"
+				:target-doctype="cartStore.targetDoctype"
+				:is-submitting="cartStore.isSubmitting || loadingPaymentPreview"
+				@payment-completed="handlePaymentCompleted"
+				@update-additional-discount="handleAdditionalDiscountUpdate"
+			/>
 
 			<!-- Customer Selection Dialog -->
 			<CustomerDialog
@@ -545,8 +567,6 @@
 			<CouponDialog
 				v-model="uiStore.showCouponDialog"
 				:subtotal="cartStore.subtotal"
-				:tax-amount="cartStore.totalTax"
-				:grand-total="cartStore.grandTotal"
 				:items="cartStore.invoiceItems"
 				:pos-profile="shiftStore.profileName"
 				:customer="cartStore.customer?.name || cartStore.customer"
@@ -620,7 +640,6 @@
 				@sync-all="handleSyncAll"
 				@delete-invoice="handleDeleteOfflineInvoice"
 				@edit-invoice="handleEditOfflineInvoice"
-				@print-invoice="handlePrintInvoice"
 				@refresh="offlineStore.loadPendingInvoices"
 			/>
 
@@ -657,6 +676,49 @@
 				:pos-profile="shiftStore.profileName"
 				:company="shiftStore.profileCompany"
 			/>
+
+			<!-- Customer Created from Display Dialog -->
+			<Dialog
+				v-model="uiStore.showCustomerCreatedDialog"
+				:options="{ title: __('New Customer'), size: 'sm' }"
+			>
+				<template #body-content>
+					<div class="py-4 text-center">
+						<div class="mx-auto flex items-center justify-center h-14 w-14 rounded-full bg-green-100 mb-4">
+							<svg class="h-8 w-8 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+							</svg>
+						</div>
+						<p class="text-gray-700 text-base mb-2">
+							{{ __("Customer created from display:") }}
+						</p>
+						<p class="font-semibold text-lg text-gray-900">
+							{{ uiStore.customerCreatedData?.customer_name }}
+						</p>
+						<p class="text-sm text-gray-500 mt-1">
+							{{ __("Do you want to select this customer for the current sale?") }}
+						</p>
+					</div>
+				</template>
+				<template #actions>
+					<div class="flex gap-2 w-full">
+						<Button
+							class="flex-1"
+							variant="subtle"
+							@click="uiStore.clearCustomerCreatedNotification()"
+						>
+							{{ __("No") }}
+						</Button>
+						<Button
+							class="flex-1"
+							variant="solid"
+							@click="selectCustomerFromDisplay"
+						>
+							{{ __("Yes, select") }}
+						</Button>
+					</div>
+				</template>
+			</Dialog>
 
 			<!-- Invoice Management -->
 			<InvoiceManagement
@@ -1024,24 +1086,20 @@ import { useRealtimeStock } from "@/composables/useRealtimeStock";
 import { useSessionLock } from "@/composables/useSessionLock";
 import { usePOSEvents } from "@/composables/usePOSEvents";
 import { useLocale } from "@/composables/useLocale";
+import { useCustomerDisplaySync } from "@/composables/useCustomerDisplaySync";
 import { session } from "@/data/session";
 import { useUserData } from "@/data/user";
 import { parseError } from "@/utils/errorHandler";
 import { cleanupUserSession } from "@/utils/sessionCleanup";
 import { offlineWorker } from "@/utils/offline/workerClient";
-import { cacheOfflineReceiptPayload } from "@/utils/offline/offlineReceiptCache";
 import { cacheInvoiceHistory, getCachedInvoiceHistory } from "@/utils/offline/sync";
-import {
-	hydrateLocalOnlyInvoice,
-	printInvoice,
-	printInvoiceByName,
-	printWithSilentFallback,
-} from "@/utils/printInvoice";
+import { printInvoice, printInvoiceByName, printWithSilentFallback } from "@/utils/printInvoice";
 import { qzConnected, connect as qzConnect, disconnect as qzDisconnect } from "@/utils/qzTray";
+import { getUOMPolicy } from "@/utils/pos_connector/uomPolicyAdapter"
 
 import { Button, Dialog, createResource } from "frappe-ui";
 import { call } from "@/utils/apiWrapper";
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch, nextTick } from "vue";
 import { useToast } from "@/composables/useToast";
 
 import { useCustomerSearchStore } from "@/stores/customerSearch";
@@ -1074,6 +1132,13 @@ const settingsStore = posSettingsStore;
 
 // Real-time stock updates
 const { onStockUpdate } = useRealtimeStock();
+
+const {
+	enableSync: enableDisplaySync,
+	disableSync: disableDisplaySync,
+	notifySaleComplete,
+	onCustomerCreated,
+} = useCustomerDisplaySync();
 
 // Session lock (inactivity + tab-refocus)
 const { lock: lockSession, configure: configureSessionLock, startActivityTracking, stopActivityTracking } = useSessionLock();
@@ -1109,18 +1174,14 @@ const logoutAfterClose = ref(false);
 const editCustomer = ref(null); // Customer being edited (null for create mode)
 const showClearCacheDialog = ref(false);
 const clearCacheOverlayRef = ref(null);
+const paymentPreview = ref(null);
+const loadingPaymentPreview = ref(false);
 
 // Debounce timer for offer reapplication
 const offerReapplyTimer = ref(null);
 
 // Performance: Cache previous cart state to avoid unnecessary reapplications
 let previousCartHash = "";
-
-// Tracks the in-flight edit of a queued offline invoice. Set by
-// handleEditOfflineInvoice, consumed by the offline branch of
-// handlePaymentCompleted to supersede the original row, and cleared
-// whenever the edit is abandoned (cart cleared without checkout).
-let editingOfflineContext = null;
 
 // Helper function to compute cart hash
 function computeCartHash() {
@@ -1160,7 +1221,7 @@ const isStockSyncActive = ref(false);
 const warehousesList = ref([]);
 
 const warehousesResource = createResource({
-	url: "pos_next.api.pos_profile.get_warehouses",
+	url: "pos_next.pos_next.doctype.pos_settings.pos_settings.get_pos_settings",
 	makeParams() {
 		return {
 			pos_profile: shiftStore.profileName,
@@ -1168,8 +1229,13 @@ const warehousesResource = createResource({
 	},
 	auto: false,
 	onSuccess(data) {
-		const warehouses = data?.message || data || [];
-		warehousesList.value = warehouses;
+		const settings = data?.message || data || {};
+		const available = settings.available_warehouses || [];
+
+		warehousesList.value = available.map((warehouse) => ({
+			name: warehouse,
+			warehouse_name: warehouse,
+		}));
 	},
 	onError(error) {
 		log.error("Error loading warehouses:", error);
@@ -1188,7 +1254,31 @@ watch(
 	{ immediate: true }
 );
 
-// Computed for warehouses - returns all warehouses for the company
+watch(
+	() => [
+		cartStore.canApplyDocumentDiscount,
+		cartStore.invoiceItems.map((item) =>
+			[
+				item?.item_code || "",
+				item?.uom || "",
+				item?.qty ?? item?.quantity ?? 0,
+				item?.discount_allowed,
+				item?.is_discount_locked,
+				item?.is_free_item ? 1 : 0,
+			].join(":")
+		).join("|"),
+	],
+	() => {
+		if (typeof cartStore.sanitizeDocumentDiscountState === "function") {
+			cartStore.sanitizeDocumentDiscountState()
+		} else if (typeof cartStore.sanitizeAdditionalDiscount === "function") {
+			cartStore.sanitizeAdditionalDiscount()
+		}
+	},
+	{ immediate: true, flush: "post" }
+)
+
+// Computed for warehouses - returns only allowed warehouses from POS Settings
 const profileWarehouses = computed(() => {
 	if (warehousesList.value.length > 0) {
 		return warehousesList.value.map((w) => ({
@@ -1196,6 +1286,7 @@ const profileWarehouses = computed(() => {
 			warehouse: w.warehouse_name || w.name,
 		}));
 	}
+
 	// Fallback to profile warehouse if API hasn't loaded yet
 	if (shiftStore.profileWarehouse) {
 		return [
@@ -1205,6 +1296,7 @@ const profileWarehouses = computed(() => {
 			},
 		];
 	}
+
 	return [];
 });
 
@@ -1373,6 +1465,7 @@ onMounted(async () => {
 
 	// Store cleanup function for unmount
 	onUnmounted(() => {
+		disableDisplaySync();
 		cleanup();
 		stopActivityTracking();
 		qzDisconnect();
@@ -1423,6 +1516,24 @@ onMounted(async () => {
 		uiStore.setLoading(false);
 	}
 
+	async function selectCustomerFromDisplay() {
+		const customerData = uiStore.customerCreatedData;
+		if (!customerData?.name) {
+			uiStore.clearCustomerCreatedNotification();
+			return;
+		}
+
+		try {
+			await cartStore.setCustomer(customerData.name);
+			showSuccess(__("Customer selected successfully"));
+		} catch (error) {
+			log.error("Failed selecting customer from display", error);
+			showError(__("Failed to select customer"));
+		} finally {
+			uiStore.clearCustomerCreatedNotification();
+		}
+	}
+
 	async function initPOS() {
 		const hasShift = await shiftStore.checkShift();
 
@@ -1441,6 +1552,27 @@ onMounted(async () => {
 			stockStore.setWarehouse(shiftStore.profileWarehouse);
 		}
 
+		// Customer display sync
+		if (shiftStore.currentShift?.name) {
+			enableDisplaySync(
+				shiftStore.currentShift.name,
+				shiftStore.profileCurrency
+			);
+
+			onCustomerCreated(async (customerData) => {
+				log.info("Customer created from display notification", customerData);
+
+				await customerSearchStore.addCustomerToCache({
+					name: customerData.name,
+					customer_name: customerData.customer_name,
+					mobile_no: customerData.mobile_no || "",
+					email_id: customerData.email || "",
+				});
+
+				uiStore.showCustomerCreatedNotification(customerData);
+			});
+		}
+		
 		// Fire independent operations in parallel while settings load.
 		// Settings must complete before tax rules, but the rest are independent.
 		const settingsPromise = posSettingsStore.loadSettings(shiftStore.profileName);
@@ -1473,7 +1605,12 @@ onMounted(async () => {
 
 		// Load tax rules (depends on settings being loaded)
 		await cartStore.loadTaxRules(shiftStore.profileName, posSettingsStore.settings);
-
+		if (shiftStore.currentShift?.name) {
+			enableDisplaySync(
+				shiftStore.currentShift.name,
+				shiftStore.profileCurrency
+			);
+		}
 		_initializedKey = `${shiftStore.profileName}::${shiftStore.currentShift?.name}`;
 	}
 });
@@ -1620,6 +1757,15 @@ watch(
 	}
 );
 
+watch(
+	() => uiStore.showPaymentDialog,
+	(isOpen) => {
+		if (!isOpen) {
+			resetPaymentPreview();
+		}
+	}
+);
+
 onUnmounted(() => {
 	window.removeEventListener("resize", () => {
 		uiStore.setWindowWidth(window.innerWidth);
@@ -1761,6 +1907,7 @@ async function updatePeriodicStockSyncItems(warehouse) {
 
 // Cleanup event listeners on unmount
 onUnmounted(() => {
+	disableDisplaySync();
 	window.removeEventListener("stockSyncComplete", handleStockSyncComplete);
 	window.removeEventListener("stockSyncError", handleStockSyncError);
 });
@@ -1778,6 +1925,12 @@ async function handleShiftOpened() {
 		stockStore.setWarehouse(shiftStore.profileWarehouse);
 	}
 
+	if (shiftStore.currentShift?.name) {
+		enableDisplaySync(
+			shiftStore.currentShift.name,
+			shiftStore.profileCurrency
+		);
+	}
 	// Mirror initPOS: fire independent operations in parallel while settings load
 	const settingsPromise = posSettingsStore.loadSettings(shiftStore.profileName);
 
@@ -1806,7 +1959,7 @@ async function handleShiftOpened() {
 	// Load tax rules (depends on settings being loaded)
 	await cartStore.loadTaxRules(shiftStore.profileName, posSettingsStore.settings);
 
-	_initializedProfile = shiftStore.profileName;
+	_initializedKey = `${shiftStore.profileName}::${shiftStore.currentShift?.name}`;
 
 	// Start session lock tracking now that a shift is open and POS is ready
 	startActivityTracking();
@@ -1816,6 +1969,7 @@ async function handleShiftOpened() {
 async function handleShiftClosed() {
 	uiStore.showCloseShiftDialog = false;
 	showSuccess(__("Shift closed successfully"));
+	disableDisplaySync();
 
 	// Check if logout should happen after closing shift
 	if (logoutAfterClose.value) {
@@ -1830,35 +1984,140 @@ async function handleShiftClosed() {
 	}
 }
 
+function preserveItemPolicySnapshot(item) {
+	if (!item) return item
+	const explicitPolicy = item?.uom_policy || item?._uom_policy || {}
+	const normalizedPolicy = getUOMPolicy(item, explicitPolicy)
+
+	return {
+		...item,
+		discount_allowed: item?.discount_allowed,
+		is_discount_locked: item?.is_discount_locked,
+		has_max_discount: item?.has_max_discount,
+		max_discount: item?.max_discount,
+		allowed_sell_uoms: Array.isArray(item?.allowed_sell_uoms) ? [...item.allowed_sell_uoms] : [],
+		allowed_buy_uoms: Array.isArray(item?.allowed_buy_uoms) ? [...item.allowed_buy_uoms] : [],
+		uom_policy: normalizedPolicy,
+		item_uoms: Array.isArray(item?.item_uoms) ? [...item.item_uoms] : [],
+		uom_prices: item?.uom_prices ? { ...item.uom_prices } : {},
+	}
+}
+
+async function selectCustomerFromDisplay() {
+	const customerData = uiStore.customerCreatedData;
+	if (!customerData?.name) {
+		uiStore.clearCustomerCreatedNotification();
+		return;
+	}
+
+	try {
+		await cartStore.setCustomer(customerData.name);
+		showSuccess(__("Customer selected successfully"));
+	} catch (error) {
+		log.error("Failed selecting customer from display", error);
+		showError(__("Failed to select customer"));
+	} finally {
+		uiStore.clearCustomerCreatedNotification();
+	}
+}
+
 function handleItemSelected(item, autoAdd = false) {
+	const explicitPolicy = item?.uom_policy || item?._uom_policy || {}
+	const uomPolicy = getUOMPolicy(item, explicitPolicy)
+
+	const selectedUom =
+		item?.resolved_uom ||
+		item?.scanned_uom ||
+		item?.barcode_uom ||
+		item?.uom ||
+		null
+
+	function isSellableUom(targetUom) {
+		if (!targetUom) return true
+
+		const allowedUoms = Array.isArray(uomPolicy?.allowed_uoms)
+			? uomPolicy.allowed_uoms
+			: []
+
+		if (allowedUoms.length > 0) {
+			return allowedUoms.some((row) => {
+				const rowUom = row?.uom || row?.value || row?.name || null
+				return rowUom === targetUom
+			})
+		}
+
+		const allRows = Array.isArray(uomPolicy?.all_uoms) ? uomPolicy.all_uoms : []
+		const matchedRow = allRows.find((row) => {
+			const rowUom = row?.uom || row?.value || row?.name || null
+			return rowUom === targetUom
+		})
+
+		if (matchedRow && matchedRow.allow_for_selling !== undefined) {
+			return Boolean(matchedRow.allow_for_selling)
+		}
+
+		return true
+	}
+
 	// Auto-add mode
 	if (autoAdd) {
 		try {
-			// Check if item has resolved barcode data (weighted/priced)
 			if (item.resolved_qty && item.resolved_barcode_type) {
-				// Get the unit price for the resolved UOM from uom_prices, or fall back to item rate
-				const resolvedUom = item.resolved_uom || item.uom;
-				const unitRate = item.uom_prices?.[resolvedUom] || item.rate;
+				const resolvedUom = item.resolved_uom || item.uom
+
+				if (!isSellableUom(resolvedUom)) {
+					uiStore.showError(
+						__("UOM Not Allowed"),
+						__('UOM "{0}" is not allowed to sell for item "{1}".', [
+							resolvedUom,
+							item.item_name || item.item_code,
+						]),
+						__("Item: {0}", [item.item_code])
+					)
+					return
+				}
+
+				const unitRate = item.uom_prices?.[resolvedUom] || item.rate
 
 				const resolvedItem = {
-					...item,
+					...preserveItemPolicySnapshot(item),
 					uom: resolvedUom,
 					rate: unitRate,
 					price_list_rate: unitRate,
-					is_resolved_barcode: true, // Mark as readonly
-				};
-				cartStore.addItem(resolvedItem, item.resolved_qty, true, shiftStore.currentProfile);
+					is_resolved_barcode: true
+				}
+
+				cartStore.addItem(
+					resolvedItem,
+					item.resolved_qty,
+					true,
+					shiftStore.currentProfile
+				)
 			} else {
-				cartStore.addItem(item, 1, true, shiftStore.currentProfile);
+				const fallbackUom = item.uom || item.stock_uom || null
+
+				if (!isSellableUom(fallbackUom)) {
+					uiStore.showError(
+						__("UOM Not Allowed"),
+						__('UOM "{0}" is not allowed to sell for item "{1}".', [
+							fallbackUom,
+							item.item_name || item.item_code,
+						]),
+						__("Item: {0}", [item.item_code])
+					)
+					return
+				}
+
+				cartStore.addItem(preserveItemPolicySnapshot(item), 1, true, shiftStore.currentProfile)
 			}
 		} catch (error) {
 			uiStore.showError(
 				__("Insufficient Stock"),
 				error.message,
 				__("Item: {0}", [item.item_code])
-			);
+			)
 		}
-		return;
+		return
 	}
 
 	// Early out-of-stock guard — prevent opening dialogs for zero-stock items
@@ -1880,28 +2139,64 @@ function handleItemSelected(item, autoAdd = false) {
 
 	// Check for variants
 	if (item.has_variants) {
-		cartStore.setPendingItem(item, 1, "variant");
+		cartStore.setPendingItem(preserveItemPolicySnapshot(item), 1, "variant");
 		uiStore.showItemSelectionDialog = true;
 		return;
 	}
 
 	// Check for UOMs
 	if (item.item_uoms && item.item_uoms.length > 0) {
-		cartStore.setPendingItem(item, 1, "uom");
-		uiStore.showItemSelectionDialog = true;
-		return;
-	}
+		const resolvedUom =
+			item.resolved_uom ||
+			item.barcode_uom ||
+			item.scanned_uom ||
+			null
 
-	// Check for batch/serial
-	if (item.has_batch_no || item.has_serial_no) {
-		cartStore.setPendingItem(item, 1);
-		uiStore.showBatchSerialDialog = true;
-		return;
+		const isResolvedBarcodeItem =
+			Boolean(item.resolved_barcode_type) ||
+			Boolean(resolvedUom)
+
+		if (isResolvedBarcodeItem && resolvedUom) {
+			const unitRate =
+				item.uom_prices?.[resolvedUom] ||
+				item.rate ||
+				item.price_list_rate ||
+				0
+
+			const resolvedItem = {
+				...item,
+				uom: resolvedUom,
+				rate: unitRate,
+				price_list_rate: unitRate,
+				is_resolved_barcode: true,
+			}
+
+			try {
+				cartStore.addItem(resolvedItem, 1, false, shiftStore.currentProfile)
+				showSuccess(
+					__("{0} ({1}) added to cart", [
+						resolvedItem.item_name,
+						resolvedUom,
+					])
+				)
+			} catch (error) {
+				uiStore.showError(
+					__("Insufficient Stock"),
+					error.message,
+					__("Item: {0}", [item.item_code])
+				)
+			}
+			return
+		}
+
+		cartStore.setPendingItem(preserveItemPolicySnapshot(item), 1, "uom")
+		uiStore.showItemSelectionDialog = true
+		return
 	}
 
 	// Add to cart
 	try {
-		cartStore.addItem(item, 1, false, shiftStore.currentProfile);
+		cartStore.addItem(preserveItemPolicySnapshot(item), 1, false, shiftStore.currentProfile);
 	} catch (error) {
 		uiStore.showError(
 			__("Insufficient Stock"),
@@ -1912,29 +2207,127 @@ function handleItemSelected(item, autoAdd = false) {
 }
 
 async function handleEditItem(updatedItem) {
-	await cartStore.updateItemDetails(updatedItem.item_code, updatedItem);
+	const selectedWarehouse =
+		updatedItem.warehouse ||
+		updatedItem.selected_warehouse ||
+		updatedItem.item_warehouse ||
+		null
+
+	const normalizedItem = {
+		...updatedItem,
+		warehouse: selectedWarehouse,
+		selected_warehouse: selectedWarehouse,
+	}
+
+	await cartStore.updateItemDetails(
+		normalizedItem.item_code,
+		normalizedItem
+	)
 }
 
 function handleAdditionalDiscountUpdate(discountAmount) {
-	// Update the additional discount value in the cart store
-	cartStore.additionalDiscount = discountAmount;
+	const safeDiscount = Number(discountAmount || 0)
 
-	// Rebuild the cache to recalculate totals
-	cartStore.rebuildIncrementalCache();
+	if (!cartStore.canApplyDocumentDiscount && safeDiscount > 0) {
+		cartStore.additionalDiscount = 0
+	} else {
+		cartStore.additionalDiscount = safeDiscount
+	}
+
+	if (typeof cartStore.sanitizeDocumentDiscountState === "function") {
+		cartStore.sanitizeDocumentDiscountState()
+	} else if (typeof cartStore.sanitizeAdditionalDiscount === "function") {
+		cartStore.sanitizeAdditionalDiscount()
+	}
+
+	cartStore.rebuildIncrementalCache()
 }
 
-function handleCustomerSelected(selectedCustomer) {
+function resetPaymentPreview() {
+	paymentPreview.value = null;
+	loadingPaymentPreview.value = false;
+}
+
+function buildPaymentPreviewPayload() {
+	const customerValue = cartStore.customer?.name || cartStore.customer;
+	const preparedItems = cartStore.formatItemsForSubmission(cartStore.invoiceItems);
+
+	return {
+		doctype: "Sales Invoice",
+		pos_profile: cartStore.posProfile,
+		customer: customerValue || shiftStore.profileCustomer,
+		company: shiftStore.profileCompany,
+		currency: shiftStore.profileCurrency,
+		is_pos: 1,
+		update_stock: 1,
+		set_warehouse: shiftStore.profileWarehouse,
+		apply_discount_on: "Net Total",
+		discount_amount: Number(cartStore.additionalDiscount || 0),
+		additional_discount_percentage: 0,
+		items: preparedItems,
+	};
+}
+
+async function openPaymentDialogWithPreview() {
+	if (typeof cartStore.sanitizeDocumentDiscountState === "function") {
+		cartStore.sanitizeDocumentDiscountState()
+	} else if (typeof cartStore.sanitizeAdditionalDiscount === "function") {
+		cartStore.sanitizeAdditionalDiscount()
+	}
+
+	await fetchFrozenPaymentPreview()
+	await nextTick()
+	uiStore.showPaymentDialog = true
+}
+
+async function fetchFrozenPaymentPreview() {
+	if (offlineStore.isOffline) {
+		resetPaymentPreview();
+		return null;
+	}
+
+	const payload = buildPaymentPreviewPayload();
+	loadingPaymentPreview.value = true;
+
+	try {
+		const result = await call("pos_next.api.invoices.preview_additional_discount", {
+			data: payload,
+		});
+
+		const preview = result?.message || result || {};
+
+		paymentPreview.value = {
+			can_apply_document_discount: Boolean(preview.can_apply_document_discount),
+			available_discount_amount: Number(preview.available_discount_amount || 0),
+			available_discount_percentage: Number(preview.available_discount_percentage || 0),
+			normalized_discount_total: Number(preview.normalized_discount_total || 0),
+			normalized_grand_total: Number(
+				preview.normalized_grand_total || cartStore.grandTotal || 0
+			),
+		};
+
+		return paymentPreview.value;
+	} catch (error) {
+		log.error("Failed to preview additional discount:", error);
+		resetPaymentPreview();
+		return null;
+	} finally {
+		loadingPaymentPreview.value = false;
+	}
+}
+
+async function handleCustomerSelected(selectedCustomer) {
 	if (selectedCustomer) {
-		cartStore.setCustomer(selectedCustomer);
-		uiStore.showCustomerDialog = false;
-		showSuccess(__("{0} selected", [selectedCustomer.customer_name]));
+		cartStore.setCustomer(selectedCustomer)
+		uiStore.showCustomerDialog = false
+		showSuccess(__("{0} selected", [selectedCustomer.customer_name]))
 
 		if (pendingPaymentAfterCustomer.value) {
-			pendingPaymentAfterCustomer.value = false;
-			uiStore.showPaymentDialog = true;
+			pendingPaymentAfterCustomer.value = false
+			await openPaymentDialogWithPreview()
 		}
 	} else {
-		cartStore.setCustomer(null);
+		cartStore.setCustomer(null)
 	}
 }
 
@@ -1950,7 +2343,7 @@ function handleEditCustomer(customer) {
 	uiStore.showCreateCustomerDialog = true;
 }
 
-function handleProceedToPayment() {
+async function handleProceedToPayment() {
 	if (cartStore.isEmpty) {
 		showWarning(__("Please add items to cart before proceeding to payment"));
 		return;
@@ -1964,7 +2357,7 @@ function handleProceedToPayment() {
 		return;
 	}
 
-	uiStore.showPaymentDialog = true;
+	await openPaymentDialogWithPreview()
 }
 
 async function handleDeleteFailedInvoice() {
@@ -2008,7 +2401,6 @@ async function handlePaymentCompleted(paymentData) {
 		if (paymentData.payments && Array.isArray(paymentData.payments)) {
 			paymentData.payments.forEach((p) => {
 				cartStore.payments.push({
-					...p,
 					mode_of_payment: p.mode_of_payment,
 					amount: p.amount,
 					type: p.type,
@@ -2032,7 +2424,26 @@ async function handlePaymentCompleted(paymentData) {
 		if (paymentData.write_off_amount && paymentData.write_off_amount > 0) {
 			cartStore.setWriteOffAmount(paymentData.write_off_amount);
 		}
+		let safeAdditionalDiscount = Number(
+			paymentData.additional_discount ??
+			cartStore.additionalDiscount ??
+			0
+		)
 
+		cartStore.additionalDiscount = safeAdditionalDiscount
+
+		if (typeof cartStore.sanitizeDocumentDiscountState === "function") {
+			safeAdditionalDiscount = cartStore.sanitizeDocumentDiscountState()
+		} else if (typeof cartStore.sanitizeAdditionalDiscount === "function") {
+			safeAdditionalDiscount = cartStore.sanitizeAdditionalDiscount()
+		}
+
+		if (!cartStore.canApplyDocumentDiscount) {
+			safeAdditionalDiscount = 0
+			cartStore.additionalDiscount = 0
+			cartStore.rebuildIncrementalCache()
+		}
+		
 		// Delete draft if it exists (since we're submitting/saving invoice)
 		const draftIdToDelete = cartStore.currentDraftId;
 
@@ -2045,7 +2456,6 @@ async function handlePaymentCompleted(paymentData) {
 			const invoiceData = {
 				pos_profile: cartStore.posProfile,
 				posa_pos_opening_shift: cartStore.posOpeningShift,
-				company: shiftStore.profileCompany,
 				customer: customerValue || shiftStore.profileCustomer,
 				items: preparedItems,
 				payments: JSON.parse(JSON.stringify(cartStore.payments)),
@@ -2053,63 +2463,16 @@ async function handlePaymentCompleted(paymentData) {
 				grand_total: cartStore.grandTotal,
 				total_tax: cartStore.totalTax,
 				total_discount: cartStore.totalDiscount,
+				additional_discount: safeAdditionalDiscount,
 				write_off_amount: paymentData.write_off_amount || 0,
-				change_amount: paymentData.change_amount || 0,
-				edited_from: editingOfflineContext?.originalOfflineId || null,
 			};
 
-			// Save to the offline queue first so we can use the worker's
-			// canonical pos_offline_<uuid> id as the cache key — keeping
-			// IndexedDB and sessionStorage aligned on a single identifier.
-			const saveResult = await offlineStore.saveInvoiceOffline(invoiceData);
-			const offlineReceiptName =
-				saveResult?.offline_id || invoiceData.offline_id || `pos_offline_${Date.now()}`;
-
-			// If this checkout was an edit of a previously-queued invoice, mark
-			// the original row as superseded (keeps audit trail, excludes from sync).
-			if (editingOfflineContext?.originalQueueId) {
-				try {
-					await offlineWorker.supersedeOfflineInvoice(
-						editingOfflineContext.originalQueueId,
-						offlineReceiptName,
-					);
-				} catch (err) {
-					log.error("Failed to supersede original offline invoice:", err);
-				}
-				editingOfflineContext = null;
-			}
-
-			const paidAmount = paymentData.paid_amount ?? cartStore.grandTotal ?? 0;
-			const grandTotal = cartStore.grandTotal || 0;
-			const customerLabel =
-				cartStore.customer?.customer_name ||
-				cartStore.customer?.name ||
-				customerValue ||
-				shiftStore.profileCustomer;
-
-			const offlinePrintDoc = {
-				name: offlineReceiptName,
-				doctype: "Sales Invoice",
-				is_offline: true,
-				pos_profile: cartStore.posProfile,
-				posting_date: new Date().toISOString().slice(0, 10),
-				company: shiftStore.profileCompany || undefined,
-				customer_name: customerLabel,
-				items: preparedItems.map((item) => ({
-					...item,
-					quantity: item.qty ?? item.quantity,
-				})),
-				grand_total: grandTotal,
-				total_taxes_and_charges: cartStore.totalTax,
-				payments: invoiceData.payments,
-				paid_amount: paidAmount,
-				change_amount: paymentData.change_amount || 0,
-				outstanding_amount: Math.max(0, grandTotal - paidAmount),
-				status: Math.max(0, grandTotal - paidAmount) < 0.01 ? "Paid" : "Unpaid",
-				docstatus: 0,
-			};
-			uiStore.setLastOfflinePrintDoc(offlinePrintDoc);
-			cacheOfflineReceiptPayload(offlineReceiptName, offlinePrintDoc);
+			await offlineStore.saveInvoiceOffline(invoiceData);
+			uiStore.showSuccess(
+				`OFFLINE-${Date.now()}`,
+				cartStore.grandTotal,
+				paymentData.paid_amount
+			);
 			uiStore.showPaymentDialog = false;
 			cartStore.clearCart();
 			// Reset cart hash after successful payment
@@ -2120,58 +2483,32 @@ async function handlePaymentCompleted(paymentData) {
 				draftsStore.deleteDraft(draftIdToDelete);
 			}
 
-			if (shiftStore.autoPrintEnabled || posSettingsStore.silentPrint) {
-				try {
-					await handlePrintInvoice({ name: offlineReceiptName });
-					showSuccess(
-						__("Invoice {0} saved offline and sent to printer — will sync when online", [
-							offlineReceiptName,
-						]),
-					);
-				} catch (error) {
-					log.error("Offline auto-print error:", error);
-					uiStore.showSuccess(offlineReceiptName, grandTotal, paymentData.paid_amount);
-					showWarning(
-						__("Invoice {0} saved offline but print failed — open Print from the success dialog", [
-							offlineReceiptName,
-						]),
-					);
-				}
-			} else {
-				uiStore.showSuccess(offlineReceiptName, grandTotal, paymentData.paid_amount);
-				showSuccess(__("Invoice saved offline. Will sync when online"));
-			}
+			showSuccess(__("Invoice saved offline. Will sync when online"));
 		} else {
 			// Get item codes from cart before clearing
 			const soldItemCodes = cartStore.invoiceItems.map((item) => item.item_code);
 
 			const result = await cartStore.submitInvoice();
+			notifySaleComplete();
 
 			if (result) {
-				uiStore.clearLastOfflinePrintDoc();
+				const submittedDoc = result.message || result || {}
 
-				// If this online checkout originated from editing a still-queued
-				// offline invoice, mark the original row as superseded so the
-				// background sync doesn't push it as a duplicate. We pass the
-				// server invoice name as replaced_by for audit trail.
-				if (editingOfflineContext?.originalQueueId) {
-					const serverName = result.name || result.message?.name || null;
-					try {
-						await offlineWorker.supersedeOfflineInvoice(
-							editingOfflineContext.originalQueueId,
-							serverName,
-						);
-					} catch (err) {
-						log.error("Failed to supersede edited offline invoice after online submit:", err);
-					}
-					editingOfflineContext = null;
-					// Refresh pending count so the OfflineInvoicesDialog badge updates.
-					await offlineStore.updatePendingCount();
-				}
+				const invoiceName =
+					submittedDoc.name || __("Unknown")
 
-				const invoiceName = result.name || result.message?.name || __("Unknown");
-				const invoiceTotal = result.grand_total || result.total || 0;
-				const paidAmount = paymentData.paid_amount || invoiceTotal;
+				const invoiceTotal = Number(
+					submittedDoc.grand_total ||
+					submittedDoc.rounded_total ||
+					submittedDoc.total ||
+					0
+				)
+
+				const paidAmount = Number(
+					submittedDoc.paid_amount ||
+					submittedDoc.base_paid_amount ||
+					invoiceTotal
+				)
 
 				uiStore.showPaymentDialog = false;
 				cartStore.clearCart();
@@ -2209,10 +2546,6 @@ async function handlePaymentCompleted(paymentData) {
 		log.error("Error submitting invoice:", error);
 		uiStore.showPaymentDialog = false;
 
-		// Checkout failed mid-edit — clear the edit context so the NEXT
-		// checkout doesn't supersede the wrong row on a fresh, unrelated sale.
-		editingOfflineContext = null;
-
 		const errorContext = parseError(error);
 		uiStore.showError(
 			errorContext.title || __("Error"),
@@ -2240,7 +2573,6 @@ function confirmClearCart() {
 	cartStore.clearCart();
 	// Reset cart hash when cart is cleared
 	previousCartHash = "";
-	editingOfflineContext = null;
 	uiStore.showClearCartDialog = false;
 	showSuccess(__("All items removed from cart"));
 }
@@ -2270,12 +2602,12 @@ async function handleOptionSelected(option) {
 			}
 
 			if (variant.item_uoms && variant.item_uoms.length > 0) {
-				cartStore.setPendingItem(variant, cartStore.pendingItemQty, "uom");
+				cartStore.setPendingItem(preserveItemPolicySnapshot(variant), cartStore.pendingItemQty, "uom");
 				return;
 			}
 
 			if (variant.has_batch_no || variant.has_serial_no) {
-				cartStore.setPendingItem(variant, cartStore.pendingItemQty);
+				cartStore.setPendingItem(preserveItemPolicySnapshot(variant), cartStore.pendingItemQty);
 				uiStore.showItemSelectionDialog = false;
 				uiStore.showBatchSerialDialog = true;
 			} else {
@@ -2300,7 +2632,7 @@ async function handleOptionSelected(option) {
 			);
 
 			const itemToAdd = {
-				...cartStore.pendingItem,
+				...preserveItemPolicySnapshot(cartStore.pendingItem),
 				uom: option.uom,
 				conversion_factor: option.conversion_factor,
 				rate: pricing.rate,
@@ -2313,7 +2645,7 @@ async function handleOptionSelected(option) {
 				uiStore.showBatchSerialDialog = true;
 			} else {
 				try {
-					cartStore.addItem(itemToAdd, qty, false, shiftStore.currentProfile);
+					cartStore.addItem(preserveItemPolicySnapshot(itemToAdd), qty, false, shiftStore.currentProfile);
 					uiStore.showItemSelectionDialog = false;
 					cartStore.clearPendingItem();
 					showSuccess(__("{0} ({1}) added to cart", [itemToAdd.item_name, option.uom]));
@@ -2342,6 +2674,52 @@ function openDraftDialog() {
 	}
 
 	uiStore.showDraftDialog = true;
+}
+
+async function openCustomerDisplay() {
+	if (!canAccessShiftActions.value || typeof window === "undefined") {
+		return
+	}
+
+	const displayUrl = `${window.location.origin}/pos/display`
+	const windowName = "customer_display_window"
+
+	try {
+		if ("getScreenDetails" in window && window.isSecureContext) {
+			const screenDetails = await window.getScreenDetails()
+			const targetScreen =
+				screenDetails.screens.find((screen) => !screen.isPrimary) ||
+				screenDetails.currentScreen
+
+			const features = [
+				"popup=yes",
+				`left=${targetScreen.availLeft}`,
+				`top=${targetScreen.availTop}`,
+				`width=${targetScreen.availWidth}`,
+				`height=${targetScreen.availHeight}`,
+				"resizable=yes",
+				"scrollbars=yes",
+			].join(",")
+
+			const opened = window.open(displayUrl, windowName, features)
+			if (opened) {
+				opened.focus()
+				return
+			}
+		}
+	} catch (error) {
+		console.warn("Second-screen open unavailable, using fallback popup.", error)
+	}
+
+	const fallback = window.open(
+		displayUrl,
+		windowName,
+		"popup=yes,width=1400,height=900,left=100,top=50,resizable=yes,scrollbars=yes"
+	)
+
+	if (fallback) {
+		fallback.focus()
+	}
 }
 
 function openHistoryDialog() {
@@ -2428,7 +2806,11 @@ async function handleLoadDraft(draft) {
 		cartStore.invoiceItems = draftData.items;
 		cartStore.setCustomer(draftData.customer);
 		cartStore.currentDraftId = draft.draft_id; // Set current draft ID
-
+		if (typeof cartStore.sanitizeDocumentDiscountState === "function") {
+			cartStore.sanitizeDocumentDiscountState()
+		} else if (typeof cartStore.sanitizeAdditionalDiscount === "function") {
+			cartStore.sanitizeAdditionalDiscount()
+		}
 		// Rebuild incremental cache to recalculate totals
 		cartStore.rebuildIncrementalCache();
 
@@ -2478,12 +2860,12 @@ function handleBatchSerialSelected(batchSerial) {
 		// Use quantity from batchSerial if provided (for multiple serial numbers), otherwise use pendingItemQty
 		const qty = batchSerial.quantity || cartStore.pendingItemQty;
 		const itemToAdd = {
-			...cartStore.pendingItem,
+			...preserveItemPolicySnapshot(cartStore.pendingItem),
 			quantity: qty,
 			...batchSerial,
 		};
 		try {
-			cartStore.addItem(itemToAdd, qty, false, shiftStore.currentProfile);
+			cartStore.addItem(preserveItemPolicySnapshot(itemToAdd), qty, false, shiftStore.currentProfile);
 			cartStore.clearPendingItem();
 		} catch (error) {
 			showError(error.message);
@@ -2605,21 +2987,6 @@ async function confirmClearCache() {
 
 async function handleEditOfflineInvoice(invoice) {
 	try {
-		if (offlineStore.isSyncing) {
-			showWarning(__("Cannot edit while syncing — please wait for sync to finish."));
-			return;
-		}
-
-		if (invoice.data?.was_printed) {
-			uiStore.showError(
-				__("Cannot edit printed invoice"),
-				__(
-					"A receipt for this invoice was already printed — the customer may have a physical copy. Use Return Invoice to issue a credit note instead.",
-				),
-			);
-			return;
-		}
-
 		cartStore.clearCart();
 
 		const invoiceData = invoice.data;
@@ -2641,15 +3008,16 @@ async function handleEditOfflineInvoice(invoice) {
 			}
 		}
 
+		if (typeof cartStore.sanitizeDocumentDiscountState === "function") {
+			cartStore.sanitizeDocumentDiscountState()
+		} else if (typeof cartStore.sanitizeAdditionalDiscount === "function") {
+			cartStore.sanitizeAdditionalDiscount()
+		}
+
 		// Initialize cart hash for the loaded cart so watchers work correctly
 		previousCartHash = computeCartHash();
 
-		// Record the edit source so the next checkout can supersede the
-		// original queue row (preserving audit trail instead of deleting it).
-		editingOfflineContext = {
-			originalQueueId: invoice.id,
-			originalOfflineId: invoice.offline_id,
-		};
+		await offlineStore.deleteOfflineInvoice(invoice.id);
 
 		showSuccess(__("Invoice loaded to cart for editing"));
 	} catch (error) {
@@ -2659,10 +3027,6 @@ async function handleEditOfflineInvoice(invoice) {
 
 async function handleDeleteOfflineInvoice(invoiceId) {
 	try {
-		if (offlineStore.isSyncing) {
-			showWarning(__("Cannot delete while syncing — please wait for sync to finish."));
-			return;
-		}
 		await offlineStore.deleteOfflineInvoice(invoiceId);
 	} catch (error) {
 		log.error("Error deleting offline invoice:", error);
@@ -2912,16 +3276,6 @@ function handleViewInvoice(invoice) {
 // Centralized print handler - uses printInvoice.js utilities
 async function handlePrintInvoice(invoiceData) {
 	try {
-		invoiceData = await hydrateLocalOnlyInvoice(invoiceData || {});
-		const offlineSnapshot = uiStore.lastOfflinePrintDoc;
-		if (
-			invoiceData?.name &&
-			offlineSnapshot?.name === invoiceData.name &&
-			offlineSnapshot.items?.length > 0
-		) {
-			invoiceData = offlineSnapshot;
-		}
-
 		// Silent print path — send directly to thermal printer via QZ Tray
 		if (posSettingsStore.silentPrint) {
 			const result = await printWithSilentFallback(invoiceData);

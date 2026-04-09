@@ -814,7 +814,7 @@
 									</span>
 									<!-- Discount Badge -->
 									<div
-										v-if="item.discount_amount && item.discount_amount > 0"
+										v-if="shouldShowDiscountBadge(item)"
 										class="inline-flex items-center px-1.5 py-0.5 bg-gradient-to-r from-red-50 to-orange-50 text-red-700 rounded-full text-[9px] font-bold border border-red-200 flex-shrink-0"
 									>
 										<svg
@@ -902,23 +902,17 @@
 									<!-- For non-serial items, show normal quantity controls -->
 									<div
 										v-else
-										:class="[
-											'flex items-center bg-gray-50 border rounded overflow-hidden',
-											item.is_resolved_barcode ? 'border-amber-300 bg-amber-50' : 'border-gray-200'
-										]"
+										class="flex items-center bg-gray-50 border border-gray-200 rounded overflow-hidden"
 									>
 										<button
 											type="button"
 											@click.stop="decrementQuantity(item)"
-											:disabled="item.is_resolved_barcode"
 											:class="[
 												'w-6 h-6 sm:w-7 sm:h-7 flex items-center justify-center font-bold transition-colors touch-manipulation border-e',
-												item.is_resolved_barcode
-													? 'bg-gray-100 text-gray-400 cursor-not-allowed border-amber-300'
-													: 'bg-white hover:bg-gray-100 active:bg-gray-200 text-gray-700 border-gray-200'
+												'bg-white hover:bg-gray-100 active:bg-gray-200 text-gray-700 border-gray-200'
 											]"
 											:aria-label="__('Decrease quantity')"
-											:title="item.is_resolved_barcode ? __('Quantity locked (barcode item)') : __('Decrease quantity')"
+											:title="__('Decrease quantity')"
 										>
 											<svg
 												class="w-3 h-3"
@@ -934,6 +928,7 @@
 												/>
 											</svg>
 										</button>
+
 										<input
 											:value="formatQuantity(item.quantity)"
 											@click.stop
@@ -942,28 +937,23 @@
 											@keydown.enter="$event.target.blur()"
 											type="text"
 											inputmode="decimal"
-											:disabled="item.is_resolved_barcode"
 											:class="[
 												'w-16 sm:w-20 h-6 sm:h-7 text-center border-0 text-xs sm:text-sm font-bold focus:outline-none',
-												item.is_resolved_barcode
-													? 'bg-amber-50 text-amber-700 cursor-not-allowed'
-													: 'bg-white text-gray-900 focus:ring-2 focus:ring-blue-500'
+												'bg-white text-gray-900 focus:ring-2 focus:ring-blue-500'
 											]"
 											:aria-label="__('Quantity')"
-											:title="item.is_resolved_barcode ? __('Quantity locked (barcode item)') : ''"
+											:title="__('Quantity')"
 										/>
+
 										<button
 											type="button"
 											@click.stop="incrementQuantity(item)"
-											:disabled="item.is_resolved_barcode"
 											:class="[
 												'w-6 h-6 sm:w-7 sm:h-7 flex items-center justify-center font-bold transition-colors touch-manipulation border-s',
-												item.is_resolved_barcode
-													? 'bg-gray-100 text-gray-400 cursor-not-allowed border-amber-300'
-													: 'bg-white hover:bg-gray-100 active:bg-gray-200 text-gray-700 border-gray-200'
+												'bg-white hover:bg-gray-100 active:bg-gray-200 text-gray-700 border-gray-200'
 											]"
 											:aria-label="__('Increase quantity')"
-											:title="item.is_resolved_barcode ? __('Quantity locked (barcode item)') : __('Increase quantity')"
+											:title="__('Increase quantity')"
 										>
 											<svg
 												class="w-3 h-3"
@@ -979,31 +969,23 @@
 												/>
 											</svg>
 										</button>
-									</div>
+									</div>									
 
 									<!-- UOM Selector Dropdown -->
 									<div class="relative group/uom" @click.stop>
 										<button
 											type="button"
 											@click="toggleUomDropdown(item.item_code, item.uom)"
-											:disabled="
-												item.is_resolved_barcode || !item.item_uoms || item.item_uoms.length === 0
-											"
+											:disabled="!canOpenUomDropdown(item)"
 											:class="[
 												'h-6 sm:h-7 text-[10px] sm:text-xs font-bold rounded ps-2 pe-5 transition-all touch-manipulation flex items-center justify-center min-w-[45px]',
 												item.is_resolved_barcode
 													? 'bg-amber-100 text-amber-700 border border-amber-300 cursor-not-allowed'
-													: item.item_uoms && item.item_uoms.length > 0
+													: canOpenUomDropdown(item)
 														? 'bg-blue-500 text-white border border-blue-400 hover:bg-blue-600 active:scale-95 cursor-pointer'
 														: 'bg-gray-100 text-gray-500 border border-gray-200 cursor-not-allowed opacity-60',
 											]"
-											:title="
-												item.is_resolved_barcode
-													? __('UOM locked (barcode item)')
-													: item.item_uoms && item.item_uoms.length > 0
-														? __('Click to change unit')
-														: __('Only one unit available')
-											"
+											:title="getUomDropdownTitle(item)"
 										>
 											{{
 												item.uom ||
@@ -1019,7 +1001,7 @@
 													: '',
 												item.is_resolved_barcode
 													? 'text-amber-600'
-													: item.item_uoms && item.item_uoms.length > 0
+													: canOpenUomDropdown(item)
 														? 'text-white'
 														: 'text-gray-400',
 											]"
@@ -1038,36 +1020,20 @@
 											v-if="
 												openUomDropdown ===
 													`${item.item_code}-${item.uom}` &&
-												item.item_uoms &&
-												item.item_uoms.length > 0
+												getAllowedCartUomOptions(item).length > 0
 											"
 											class="absolute top-full start-0 mt-0.5 bg-white border border-blue-300 rounded shadow-xl z-50 min-w-full overflow-hidden"
 										>
 											<button
+												v-for="(uomOption, optionIndex) in getAllowedCartUomOptions(item)"
+												:key="uomOption.key || uomOption.uom"
 												type="button"
-												@click="selectUom(item, item.stock_uom)"
-												:class="[
-													'w-full text-start px-2 py-1.5 text-[10px] sm:text-xs font-semibold transition-colors border-b border-gray-100',
-													(item.uom || item.stock_uom) === item.stock_uom
-														? 'bg-blue-50 text-blue-700'
-														: 'text-gray-700 hover:bg-blue-50',
-												]"
+												@click="selectUom(item, uomOption.uom)"
+												:disabled="!isUomOptionAllowed(item, uomOption.uom)"
+												:class="getCartUomOptionClass(item, uomOption, optionIndex, getAllowedCartUomOptions(item).length)"
+												:title="getCartUomOptionTitle(item, uomOption.uom)"
 											>
-												{{ item.stock_uom || __("Nos", null, "UOM") }}
-											</button>
-											<button
-												v-for="uomData in item.item_uoms"
-												:key="uomData.uom"
-												type="button"
-												@click="selectUom(item, uomData.uom)"
-												:class="[
-													'w-full text-start px-2 py-1.5 text-[10px] sm:text-xs font-semibold transition-colors border-b border-gray-100 last:border-0',
-													(item.uom || item.stock_uom) === uomData.uom
-														? 'bg-blue-50 text-blue-700'
-														: 'text-gray-700 hover:bg-blue-50',
-												]"
-											>
-												{{ uomData.uom }}
+												{{ uomOption.uom }}
 											</button>
 										</div>
 									</div>
@@ -1805,9 +1771,6 @@ function getSmartStep(quantity) {
  * @param {Object} item - Cart item to increment
  */
 function incrementQuantity(item) {
-	// Prevent editing resolved barcode items
-	if (item.is_resolved_barcode) return;
-
 	const step = getSmartStep(item.quantity);
 	const newQty = Math.round((item.quantity + step) * 10000) / 10000;
 	emit("update-quantity", item.item_code, newQty, item.uom);
@@ -1820,14 +1783,10 @@ function incrementQuantity(item) {
  * @param {Object} item - Cart item to decrement
  */
 function decrementQuantity(item) {
-	// Prevent editing resolved barcode items
-	if (item.is_resolved_barcode) return;
-
 	const step = getSmartStep(item.quantity);
 	const newQty = Math.round((item.quantity - step) * 10000) / 10000;
 
 	if (newQty <= 0) {
-		// If quantity would be 0 or negative, remove the item
 		emit("remove-item", item.item_code, item.uom);
 	} else {
 		emit("update-quantity", item.item_code, newQty, item.uom);
@@ -1841,20 +1800,12 @@ function decrementQuantity(item) {
  * @param {Object} item - Cart item to update
  * @param {String} value - New quantity value from input
  */
-  
 function updateQuantity(item, value) {
-	// Prevent editing resolved barcode items
-	if (item.is_resolved_barcode) return;
-
 	const qty = Number.parseFloat(value);
 
-	// If the input isn't a valid number (e.g., user cleared the field), do nothing
 	if (isNaN(qty)) return;
-
-	// If quantity is zero or negative, remove the item from the cart
 	if (qty <= 0) return emit("remove-item", item.item_code, item.uom);
 
-	// For positive numbers, update quantity immediately (no rounding here while typing)
 	emit("update-quantity", item.item_code, qty, item.uom);
 }
 
@@ -1893,6 +1844,133 @@ function toggleUomDropdown(itemCode, uom) {
 	openUomDropdown.value = openUomDropdown.value === key ? null : key;
 }
 
+function normalizePolicyUomRows(rows = []) {
+	if (!Array.isArray(rows)) return [];
+	return rows
+		.map((row) => {
+			if (typeof row === "string") {
+				return { uom: row, allow_for_selling: true };
+			}
+			const uom = row?.uom || row?.value || row?.name || null;
+			if (!uom) return null;
+			return {
+				uom,
+				allow_for_selling: row?.allow_for_selling,
+			};
+		})
+		.filter(Boolean);
+}
+
+function getItemUomPolicy(item) {
+	return item?.uom_policy || item?._uom_policy || {};
+}
+
+function getAllowedSellUoms(item) {
+	const policy = getItemUomPolicy(item);
+
+	// NEW: trust direct synced field first
+	if (Array.isArray(item?.allowed_sell_uoms) && item.allowed_sell_uoms.length > 0) {
+		return [...new Set(item.allowed_sell_uoms.filter(Boolean))];
+	}
+
+	const normalizedAllowed = normalizePolicyUomRows(policy?.allowed_uoms);
+	if (normalizedAllowed.length > 0) {
+		return [...new Set(normalizedAllowed.map((row) => row.uom).filter(Boolean))];
+	}
+
+	const normalizedAll = normalizePolicyUomRows(policy?.all_uoms);
+	if (normalizedAll.length > 0) {
+		const allowedFromAll = normalizedAll
+			.filter((row) => row.allow_for_selling !== false)
+			.map((row) => row.uom);
+
+		if (allowedFromAll.length > 0) {
+			return [...new Set(allowedFromAll)];
+		}
+	}
+
+	return [];
+}
+
+function getAllCartUomOptions(item) {
+	const seen = new Set();
+	const options = [];
+
+	const pushUom = (uom) => {
+		if (!uom || seen.has(uom)) return;
+		seen.add(uom);
+		options.push({ key: uom, uom });
+	};
+
+	pushUom(item?.stock_uom || __("Nos", null, "UOM"));
+	if (Array.isArray(item?.item_uoms)) {
+		item.item_uoms.forEach((row) => pushUom(row?.uom));
+	}
+	pushUom(item?.uom);
+
+	return options;
+}
+
+function isUomOptionAllowed(item, uom) {
+	if (!item || !uom) return false;
+	if (item.is_resolved_barcode) return item.uom === uom || item.stock_uom === uom;
+
+	const allowed = getAllowedSellUoms(item);
+	if (allowed.length > 0) {
+		return allowed.includes(uom);
+	}
+
+	return true;
+}
+
+function getAllowedCartUomOptions(item) {
+	return getAllCartUomOptions(item).filter((option) => isUomOptionAllowed(item, option.uom));
+}
+
+function canOpenUomDropdown(item) {
+	if (!item || item.is_resolved_barcode) return false;
+	return getAllowedCartUomOptions(item).length > 1;
+}
+
+function getUomDropdownTitle(item) {
+	if (item?.is_resolved_barcode) return __('UOM locked (barcode item)');
+	const allowedCount = getAllowedCartUomOptions(item).length;
+	if (allowedCount > 1) return __('Click to change unit');
+	if (allowedCount === 1) return __('UOM locked (only one sellable unit available)');
+	return __('No sellable UOM available');
+}
+
+function getCartUomOptionClass(item, uomOption, optionIndex, optionCount) {
+	const isSelected = (item.uom || item.stock_uom) === uomOption.uom;
+	const isAllowed = isUomOptionAllowed(item, uomOption.uom);
+	const isLast = optionIndex === optionCount - 1;
+
+	return [
+		'w-full text-start px-2 py-1.5 text-[10px] sm:text-xs font-semibold transition-colors border-gray-100',
+		isLast ? 'last:border-0' : 'border-b',
+		isSelected
+			? 'bg-blue-50 text-blue-700'
+			: isAllowed
+				? 'text-gray-700 hover:bg-blue-50 cursor-pointer'
+				: 'bg-gray-50 text-gray-400 cursor-not-allowed opacity-70',
+	];
+}
+
+function getCartUomOptionTitle(item, uom) {
+	if (isUomOptionAllowed(item, uom)) return __('Change unit to {0}', [uom]);
+	return __('UOM "{0}" is not allowed to sell for this item', [uom]);
+}
+
+function shouldShowDiscountBadge(item) {
+	const discountAmount = Number(item?.discount_amount || 0);
+	if (!(discountAmount > 0)) return false;
+
+	if (item?.discount_allowed === 0 || item?.discount_allowed === false) return false;
+	if (item?.is_discount_locked === 1 || item?.is_discount_locked === true) return false;
+
+	return true;
+}
+
 /**
  * Select a UOM from dropdown - changes UOM and closes dropdown
  * Handles merging if target UOM already exists in cart
@@ -1900,6 +1978,10 @@ function toggleUomDropdown(itemCode, uom) {
 async function selectUom(item, newUom) {
 	if (item.uom === newUom) {
 		openUomDropdown.value = null;
+		return;
+	}
+
+	if (!isUomOptionAllowed(item, newUom)) {
 		return;
 	}
 

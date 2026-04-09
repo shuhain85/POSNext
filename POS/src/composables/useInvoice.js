@@ -217,6 +217,55 @@ export function useInvoice() {
 		)
 	})
 
+	const discountEligibleItems = computed(() => {
+		return invoiceItems.value.filter((item) => {
+			if (!item || item.is_free_item) return false
+
+			const qty = Number(item.qty ?? item.quantity ?? 0)
+			if (qty <= 0) return false
+
+			const discountAllowed = item.discount_allowed
+			const isDiscountLocked = item.is_discount_locked
+
+			if (
+				discountAllowed === 0 ||
+				discountAllowed === "0" ||
+				discountAllowed === false
+			) {
+				return false
+			}
+
+			if (
+				isDiscountLocked === 1 ||
+				isDiscountLocked === "1" ||
+				isDiscountLocked === true
+			) {
+				return false
+			}
+
+			return true
+		})
+	})
+
+	const canApplyDocumentDiscount = computed(() => {
+		return discountEligibleItems.value.length > 0
+	})
+
+	function sanitizeAdditionalDiscount() {
+		let safeDiscount = Number(additionalDiscount.value || 0)
+
+		if (!canApplyDocumentDiscount.value) {
+			safeDiscount = 0
+		}
+
+		if (safeDiscount < 0) {
+			safeDiscount = 0
+		}
+
+		additionalDiscount.value = safeDiscount
+		return safeDiscount
+	}
+
 	// Actions
 	function addItem(item, quantity = 1) {
 		const itemUom = item.uom || item.stock_uom
@@ -282,17 +331,26 @@ export function useInvoice() {
 				has_serial_no: item.has_serial_no || 0,
 				batch_no: item.batch_no,
 				serial_no: item.serial_no,
-				item_uoms: item.item_uoms || [], // Available UOMs for this item
-				// Add item_group and brand for offer eligibility checking
+				item_uoms: item.item_uoms || [],
 				item_group: item.item_group,
 				brand: item.brand,
-				// Resolved barcode flag - prevents editing qty/uom/rate for weighted/priced barcodes
 				is_resolved_barcode: item.is_resolved_barcode || false,
-				// Stock validation fields — needed for qty increase checks in cart
 				actual_qty: item.actual_qty ?? 0,
 				is_stock_item: item.is_stock_item ?? 1,
 				is_bundle: item.is_bundle || false,
 				allow_negative_stock: item.allow_negative_stock || 0,
+
+				// Preserve synced policy payload
+				discount_allowed: item.discount_allowed,
+				is_discount_locked: item.is_discount_locked,
+				has_max_discount: item.has_max_discount,
+				max_discount: item.max_discount,
+
+				allowed_sell_uoms: Array.isArray(item.allowed_sell_uoms) ? [...item.allowed_sell_uoms] : [],
+				allowed_buy_uoms: Array.isArray(item.allowed_buy_uoms) ? [...item.allowed_buy_uoms] : [],
+				uom_policy: item.uom_policy || item._uom_policy || null,
+				_uom_policy: item._uom_policy || item.uom_policy || null,
+				uom_prices: item.uom_prices ? { ...item.uom_prices } : {},
 			}
 			invoiceItems.value.push(newItem)
 			// Recalculate the newly added item to apply taxes
@@ -534,17 +592,12 @@ export function useInvoice() {
 		// Store coupon code for tracking
 		couponCode.value = discount.code || discount.name
 
-		const baseAmount =
-			typeof discount.base_amount === "number"
-				? discount.base_amount
-				: subtotal.value
-
 		// Use centralized calculation to handle percentage/amount and clamping
-		let discountAmount = calculateDiscountAmount(discount, baseAmount)
+		let discountAmount = calculateDiscountAmount(discount, subtotal.value)
 
-		// Clamp discount to the same base the coupon was calculated against
-		if (discountAmount > baseAmount) {
-			discountAmount = baseAmount
+		// Clamp discount to subtotal (cannot exceed total)
+		if (discountAmount > subtotal.value) {
+			discountAmount = subtotal.value
 		}
 
 		// Ensure non-negative
@@ -825,76 +878,6 @@ export function useInvoice() {
 		}
 	}
 
-	function serializeInvoicePayments(rawPayments) {
-		return rawPayments
-			.filter((payment) => !payment?.is_customer_credit)
-			.map((payment) => ({
-				mode_of_payment: payment.mode_of_payment,
-				amount: payment.amount,
-				type: payment.type,
-			}))
-	}
-
-	function buildCustomerCreditPayload(rawPayments) {
-		const creditPayments = rawPayments.filter((payment) => payment?.is_customer_credit)
-
-		if (!creditPayments.length) {
-			return {
-				invoicePayments: serializeInvoicePayments(rawPayments),
-				redeemedCustomerCredit: 0,
-				customerCreditDict: [],
-			}
-		}
-
-		const creditSources = new Map()
-		for (const payment of creditPayments) {
-			for (const credit of payment.credit_details || []) {
-				if (!credit?.type || !credit?.credit_origin) continue
-				const key = `${credit.type}:${credit.credit_origin}`
-				if (!creditSources.has(key)) {
-					creditSources.set(key, credit)
-				}
-			}
-		}
-
-		const redeemedCustomerCredit = roundCurrency(
-			creditPayments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0),
-		)
-
-		let remainingCreditToAllocate = redeemedCustomerCredit
-		const customerCreditDict = []
-
-		for (const credit of creditSources.values()) {
-			if (remainingCreditToAllocate <= 0) break
-
-			const availableCredit = roundCurrency(
-				Number(credit.available_credit ?? credit.total_credit ?? 0),
-			)
-			if (availableCredit <= 0) continue
-
-			const creditToRedeem = Math.min(availableCredit, remainingCreditToAllocate)
-			if (creditToRedeem <= 0) continue
-
-			customerCreditDict.push({
-				...credit,
-				credit_to_redeem: roundCurrency(creditToRedeem),
-			})
-			remainingCreditToAllocate = roundCurrency(
-				remainingCreditToAllocate - creditToRedeem,
-			)
-		}
-
-		if (remainingCreditToAllocate > 0.01) {
-			throw new Error("Unable to allocate the selected customer credit")
-		}
-
-		return {
-			invoicePayments: serializeInvoicePayments(rawPayments),
-			redeemedCustomerCredit,
-			customerCreditDict,
-		}
-	}
-
 	async function saveDraft(targetDoctype = "Sales Invoice") {
 		/**
 		 * Save invoice as draft (Step 1)
@@ -903,7 +886,7 @@ export function useInvoice() {
 		// Use toRaw() to ensure we get current, non-reactive values (prevents stale cached quantities)
 		const rawItems = toRaw(invoiceItems.value)
 		const rawPayments = toRaw(payments.value)
-		const { invoicePayments } = buildCustomerCreditPayload(rawPayments)
+		const safeAdditionalDiscount = sanitizeAdditionalDiscount()
 
 		const invoiceData = {
 			doctype: targetDoctype,
@@ -911,8 +894,12 @@ export function useInvoice() {
 			posa_pos_opening_shift: posOpeningShift.value,
 			customer: customer.value?.name || customer.value,
 			items: formatItemsForSubmission(rawItems),
-			payments: invoicePayments,
-			discount_amount: additionalDiscount.value || 0,
+			payments: rawPayments.map((p) => ({
+				mode_of_payment: p.mode_of_payment,
+				amount: p.amount,
+				type: p.type,
+			})),
+			discount_amount: safeAdditionalDiscount,
 			coupon_code: couponCode.value,
 			is_pos: 1,
 			update_stock: 1,
@@ -937,18 +924,8 @@ export function useInvoice() {
 		 * Two-step submission process with mutex protection:
 		 * 1. Create/update draft invoice
 		 * 2. Validate stock and submit
-		 *
-		 * The mutex prevents duplicate invoice creation from:
-		 * - Rapid double-clicks on payment buttons
-		 * - Concurrent submissions from multiple UI interactions
-		 * - Credit sales where full amount goes on account
-		 *
-		 * @param {string} targetDoctype - The document type to create (Sales Invoice or Sales Order)
-		 * @param {string|null} deliveryDate - Delivery date for Sales Orders
-		 * @param {number} writeOffAmount - Amount to write off (small remaining balances)
 		 */
 		return await submitMutex.withLock(async () => {
-			// Check if already submitting (belt and suspenders with mutex)
 			if (isSubmitting.value) {
 				log.warn(
 					"Invoice submission already in progress, skipping duplicate request",
@@ -960,15 +937,10 @@ export function useInvoice() {
 
 			try {
 				// Step 1: Create invoice draft
-				// Use toRaw() to ensure we get current, non-reactive values (prevents stale cached quantities)
 				const rawItems = toRaw(invoiceItems.value)
 				const rawPayments = toRaw(payments.value)
 				const rawSalesTeam = toRaw(salesTeam.value)
-				const {
-					invoicePayments,
-					redeemedCustomerCredit,
-					customerCreditDict,
-				} = buildCustomerCreditPayload(rawPayments)
+				const safeAdditionalDiscount = sanitizeAdditionalDiscount()
 
 				const invoiceData = {
 					doctype: targetDoctype,
@@ -976,18 +948,21 @@ export function useInvoice() {
 					posa_pos_opening_shift: posOpeningShift.value,
 					customer: customer.value?.name || customer.value,
 					items: formatItemsForSubmission(rawItems),
-					payments: invoicePayments,
-					discount_amount: additionalDiscount.value || 0,
+					payments: rawPayments.map((p) => ({
+						mode_of_payment: p.mode_of_payment,
+						amount: p.amount,
+						type: p.type,
+					})),
+					discount_amount: safeAdditionalDiscount,
 					coupon_code: couponCode.value,
 					is_pos: 1,
-					update_stock: 1, // Critical: Ensures stock is updated
+					update_stock: 1,
 				}
 
 				if (targetDoctype === "Sales Order" && deliveryDate) {
 					invoiceData.delivery_date = deliveryDate
 				}
 
-				// Add sales_team if provided
 				if (rawSalesTeam && rawSalesTeam.length > 0) {
 					invoiceData.sales_team = rawSalesTeam.map((member) => ({
 						sales_person: member.sales_person,
@@ -1020,23 +995,16 @@ export function useInvoice() {
 					write_off_amount: writeOffAmount || 0,
 				}
 
-				if (redeemedCustomerCredit > 0 && customerCreditDict.length > 0) {
-					submitData.redeemed_customer_credit = redeemedCustomerCredit
-					submitData.customer_credit_dict = customerCreditDict
-				}
-
 				try {
 					const result = await submitInvoiceResource.submit({
 						invoice: invoiceDoc,
 						data: submitData,
 					})
 
-					// Check if resource has error (frappe-ui pattern)
 					if (submitInvoiceResource.error) {
 						const resourceError = submitInvoiceResource.error
 						console.error("Submit invoice resource error:", resourceError)
 
-						// Create a detailed error object
 						const detailedError = new Error(
 							resourceError.message || "Invoice submission failed",
 						)
@@ -1051,53 +1019,32 @@ export function useInvoice() {
 					resetInvoice()
 					return result
 				} catch (error) {
-					// Preserve original error object with all its properties
 					console.error("Submit invoice error:", error)
 					console.log(
 						"submitInvoiceResource.error:",
 						submitInvoiceResource.error,
 					)
 
-					// If resource has error data, extract and attach it
 					if (submitInvoiceResource.error) {
 						const resourceError = submitInvoiceResource.error
-						console.log("Resource error details:", {
-							exc_type: resourceError.exc_type,
-							_server_messages: resourceError._server_messages,
-							httpStatus: resourceError.httpStatus,
-							messages: resourceError.messages,
-							messagesContent: JSON.stringify(resourceError.messages),
-							data: resourceError.data,
-							exception: resourceError.exception,
-							keys: Object.keys(resourceError),
-						})
 
-						// The messages array likely contains the detailed error info
-						if (resourceError.messages && resourceError.messages.length > 0) {
-							console.log("First message:", resourceError.messages[0])
-						}
-
-						// Attach all resource error properties to the error
 						error.exc_type = resourceError.exc_type || error.exc_type
 						error._server_messages = resourceError._server_messages
 						error.httpStatus = resourceError.httpStatus
 						error.messages = resourceError.messages
 						error.exception = resourceError.exception
 						error.data = resourceError.data
-
-						console.log("After attaching, error.messages:", error.messages)
 					}
 
 					throw error
 				}
 			} catch (error) {
-				// Outer catch to ensure error propagates
 				console.error("Submit invoice outer error:", error)
 				throw error
 			} finally {
 				isSubmitting.value = false
 			}
-		}) // End of submitMutex.withLock
+		})
 	}
 
 	/**
@@ -1257,6 +1204,8 @@ export function useInvoice() {
 		totalPaid,
 		remainingAmount,
 		canSubmit,
+		discountEligibleItems,
+		canApplyDocumentDiscount,
 
 		// Actions
 		addItem,
@@ -1267,6 +1216,7 @@ export function useInvoice() {
 		calculateDiscountAmount,
 		applyDiscount,
 		removeDiscount,
+		sanitizeAdditionalDiscount,
 		addPayment,
 		removePayment,
 		updatePayment,

@@ -172,24 +172,241 @@ export const usePOSCartStore = defineStore("posCart", () => {
 	const isEmpty = computed(() => invoiceItems.value.length === 0)
 	const hasCustomer = computed(() => !!customer.value)
 
+	const discountEligibleItems = computed(() => {
+		return invoiceItems.value.filter((item) => {
+			if (!item || item.is_free_item) return false
+
+			const qty = Number(item.qty ?? item.quantity ?? 0)
+			if (qty <= 0) return false
+
+			const discountAllowed = item.discount_allowed
+			const isDiscountLocked = item.is_discount_locked
+
+			if (
+				discountAllowed === 0 ||
+				discountAllowed === "0" ||
+				discountAllowed === false
+			) {
+				return false
+			}
+
+			if (
+				isDiscountLocked === 1 ||
+				isDiscountLocked === "1" ||
+				isDiscountLocked === true
+			) {
+				return false
+			}
+
+			return true
+		})
+	})
+
+	const canApplyDocumentDiscount = computed(() => {
+		return discountEligibleItems.value.length > 0
+	})
+
+	function sanitizeDocumentDiscountState() {
+		let safeDiscount = Number(additionalDiscount.value || 0)
+
+		if (!canApplyDocumentDiscount.value) {
+			safeDiscount = 0
+		}
+
+		if (safeDiscount < 0) {
+			safeDiscount = 0
+		}
+
+		additionalDiscount.value = safeDiscount
+		return safeDiscount
+	}
+
+	function buildUomSnapshot(item = {}, qty = null) {
+		const quantity = Number(qty ?? item.quantity ?? item.qty ?? 1) || 1
+		const conversionFactor = Number(item.conversion_factor || 1) || 1
+		const rate = Number(item.rate || 0) || 0
+		const stockUom = item.stock_uom || item.uom || ""
+
+		const availableStockQty =
+			item.available_stock_qty ??
+			item.selected_stock_qty ??
+			item.actual_qty ??
+			item.stock_qty ??
+			null
+
+		return {
+			selected_uom: item.uom || stockUom,
+			selected_uom_label:
+				item.selected_uom_label ||
+				(conversionFactor > 1
+					? `${item.uom || stockUom} x ${conversionFactor}`
+					: (item.uom || stockUom)),
+			selected_conversion_factor: conversionFactor,
+			selected_stock_uom: stockUom,
+			selected_qty: quantity,
+			selected_display_rate: rate,
+			selected_display_subtotal: rate * quantity,
+			selected_stock_uom_qty_required:
+				item.required_stock_qty ?? (quantity * conversionFactor),
+			selected_stock_qty: availableStockQty,
+		}
+	}
+
+	function applyUomSnapshot(target, source = {}, qty = null) {
+		Object.assign(target, buildUomSnapshot({ ...target, ...source }, qty))
+		return target
+	}
+
+
+	function normalizeUomValue(row) {
+		if (!row) return null
+		if (typeof row === "string") return row.trim() || null
+		return row.uom || row.value || row.name || null
+	}
+
+	function getAllowedSellUoms(item = {}) {
+		const explicitPolicy = item?.uom_policy || item?._uom_policy || {}
+		const allowedRows = Array.isArray(explicitPolicy.allowed_uoms)
+			? explicitPolicy.allowed_uoms
+			: []
+
+		const allRows = Array.isArray(explicitPolicy.all_uoms)
+			? explicitPolicy.all_uoms
+			: []
+
+		const candidates = []
+
+		if (allowedRows.length > 0) {
+			allowedRows.forEach((row) => {
+				const uom = normalizeUomValue(row)
+				if (uom) candidates.push(uom)
+			})
+		} else if (allRows.length > 0) {
+			allRows.forEach((row) => {
+				const uom = normalizeUomValue(row)
+				if (!uom) return
+				if (row.allow_for_selling === undefined || Boolean(row.allow_for_selling)) {
+					candidates.push(uom)
+				}
+			})
+		}
+
+		const fallbackLists = [
+			item.allowed_uoms,
+			item.allowed_sell_uoms,
+			item.sellable_uoms,
+		]
+
+		fallbackLists.forEach((rows) => {
+			if (!Array.isArray(rows)) return
+			rows.forEach((row) => {
+				const uom = normalizeUomValue(row)
+				if (uom) candidates.push(uom)
+			})
+		})
+
+		const fallbackMaps = [item.allowed_uom_map, item.allowed_sell_uom_map]
+		fallbackMaps.forEach((mapping) => {
+			if (!mapping || typeof mapping !== "object") return
+			Object.entries(mapping).forEach(([uom, allowed]) => {
+				if (allowed) candidates.push(uom)
+			})
+		})
+
+		const normalized = [...new Set(candidates.filter(Boolean).map((uom) => String(uom).trim()))]
+		if (normalized.length > 0) return normalized
+
+		return [...new Set([
+			item.resolved_uom,
+			item.scanned_uom,
+			item.barcode_uom,
+			item.uom,
+			item.stock_uom,
+		].filter(Boolean))]
+	}
+
+	function isSellUomAllowed(item = {}, targetUom = null) {
+		if (!targetUom) return true
+		const allowedUoms = getAllowedSellUoms(item)
+		if (!allowedUoms.length) return true
+		return allowedUoms.includes(targetUom)
+	}
+
+	function buildPolicySnapshot(item = {}) {
+		const explicitPolicy = item?.uom_policy || item?._uom_policy || null
+		const allowedSellUoms = getAllowedSellUoms(item)
+
+		return {
+			uom_policy: explicitPolicy,
+			_uom_policy: explicitPolicy,
+			allowed_uoms: allowedSellUoms,
+			allowed_sell_uoms: allowedSellUoms,
+			sellable_uoms: allowedSellUoms,
+			discount_allowed: item.discount_allowed,
+			is_discount_locked: item.is_discount_locked,
+			has_max_discount: item.has_max_discount,
+			max_discount: item.max_discount,
+			is_resolved_barcode: Boolean(item.is_resolved_barcode),
+			resolved_uom: item.resolved_uom || item.uom || item.stock_uom || null,
+			selected_warehouse: item.selected_warehouse || item.warehouse || null,
+			allowed_warehouse_stock: Array.isArray(item.allowed_warehouse_stock)
+				? item.allowed_warehouse_stock
+				: [],
+			available_stock_qty:
+				item.available_stock_qty ??
+				item.selected_stock_qty ??
+				item.actual_qty ??
+				item.stock_qty ??
+				null,
+		}
+	}
+
+	function applyPolicySnapshot(target, source = {}) {
+		Object.assign(target, buildPolicySnapshot({ ...target, ...source }))
+		return target
+	}
+
+	function normalizeCartLine(item = {}, qty = null) {
+		const quantity = Number(item.quantity ?? item.qty ?? qty ?? 1) || 1
+		const normalized = {
+			...item,
+			quantity,
+			qty: quantity,
+		}
+
+		applyPolicySnapshot(normalized, normalized)
+		applyUomSnapshot(normalized, normalized, quantity)
+		return normalized
+	}
+
+
+
 	// Actions
 	function addItem(item, qty = 1, _autoAdd = false, currentProfile = null) {
-		if (currentProfile && settingsStore.shouldEnforceStockValidation() && shouldValidateItemStock(item)) {
-			// Account for quantity already in the cart for this item
-			const itemUom = item.uom || item.stock_uom
-			const existing = invoiceItems.value.find(
-				(i) => i.item_code === item.item_code && i.uom === itemUom,
-			)
-			const totalQty = (existing ? existing.quantity : 0) + qty
-			const warehouse = item.warehouse || currentProfile.warehouse
+		const normalizedItem = normalizeCartLine(item, qty)
+		const itemUom = normalizedItem.uom || normalizedItem.stock_uom
 
-			const check = checkStockAvailability(item, totalQty, warehouse)
+		if (!isSellUomAllowed(normalizedItem, itemUom)) {
+			throw new Error(__("UOM \"{0}\" is not allowed to sell for item \"{1}\".", [
+				itemUom,
+				normalizedItem.item_name || normalizedItem.item_code,
+			]))
+		}
+
+		if (currentProfile && settingsStore.shouldEnforceStockValidation() && shouldValidateItemStock(normalizedItem)) {
+			const existing = invoiceItems.value.find(
+				(i) => i.item_code === normalizedItem.item_code && i.uom === itemUom,
+			)
+			const totalQty = (existing ? existing.quantity : 0) + normalizedItem.quantity
+			const warehouse = normalizedItem.warehouse || currentProfile.warehouse
+
+			const check = checkStockAvailability(normalizedItem, totalQty, warehouse)
 			if (!check.available) {
 				throw new Error(check.error)
 			}
 		}
 
-		addItemToInvoice(item, qty)
+		addItemToInvoice(normalizedItem, normalizedItem.quantity)
 	}
 
 	/**
@@ -229,6 +446,7 @@ export const usePOSCartStore = defineStore("posCart", () => {
 		appliedCoupon.value = null
 		currentDraftId.value = null
 		targetDoctype.value = "Sales Invoice"
+		additionalDiscount.value = 0
 
 		// Reset offer processing state
 		offerProcessingState.value.lastCartHash = ''
@@ -264,8 +482,14 @@ export const usePOSCartStore = defineStore("posCart", () => {
 			return
 		}
 
-		const result = await baseSubmitInvoice(targetDoctype.value, deliveryDate.value, writeOffAmount.value)
-		// Reset write-off amount after successful submission
+		sanitizeDocumentDiscountState()
+
+		const result = await baseSubmitInvoice(
+			targetDoctype.value,
+			deliveryDate.value,
+			writeOffAmount.value
+		)
+
 		if (result) {
 			writeOffAmount.value = 0
 		}
@@ -283,8 +507,8 @@ export const usePOSCartStore = defineStore("posCart", () => {
 	}
 
 	function setPendingItem(item, qty = 1, mode = "uom") {
-		pendingItem.value = item
-		pendingItemQty.value = qty
+		pendingItem.value = normalizeCartLine(item, qty)
+		pendingItemQty.value = Number(qty ?? item?.quantity ?? item?.qty ?? 1) || 1
 		selectionMode.value = mode
 	}
 
@@ -321,7 +545,7 @@ export const usePOSCartStore = defineStore("posCart", () => {
 			company: currentProfile?.company,
 			selling_price_list: currentProfile?.selling_price_list,
 			currency: currentProfile?.currency,
-			discount_amount: additionalDiscount.value || 0,
+			discount_amount: sanitizeDocumentDiscountState(),
 			coupon_code: appliedCoupon.value?.name || "",
 			items: rawItems.map((item) => ({
 				item_code: item.item_code,
@@ -390,14 +614,18 @@ export const usePOSCartStore = defineStore("posCart", () => {
 	 */
 	function processFreeItems(freeItems) {
 		// Reset free_qty on all non-free items
-		invoiceItems.value.forEach(item => {
+		invoiceItems.value.forEach((item) => {
 			if (!item.is_free_item) {
 				item.free_qty = 0
 			}
 		})
 
-		// Remove previously-added free item rows (they'll be re-added below if still valid)
-		invoiceItems.value = invoiceItems.value.filter(item => !item.is_free_item)
+		// Remove previously added free-item rows WITHOUT replacing array reference
+		for (let i = invoiceItems.value.length - 1; i >= 0; i--) {
+			if (invoiceItems.value[i]?.is_free_item) {
+				invoiceItems.value.splice(i, 1)
+			}
+		}
 
 		// Early return if no free items
 		if (!Array.isArray(freeItems) || freeItems.length === 0) {
@@ -411,42 +639,43 @@ export const usePOSCartStore = defineStore("posCart", () => {
 
 			const freeUom = freeItem.uom || freeItem.stock_uom
 
-			// Check if this free item matches an existing (non-free) cart item
+			// Same product already in cart -> annotate existing row only
 			const cartItem = invoiceItems.value.find(
-				item => !item.is_free_item &&
+				(item) =>
+					!item.is_free_item &&
 					item.item_code === freeItem.item_code &&
 					(item.uom || item.stock_uom) === freeUom
 			)
 
 			if (cartItem) {
-				// Same item is already in cart — just annotate with free_qty
 				cartItem.free_qty = freeQty
-			} else {
-				// Different product — add a dedicated free item row
-				invoiceItems.value.push({
-					item_code: freeItem.item_code,
-					item_name: freeItem.item_name || freeItem.item_code,
-					rate: 0,
-					price_list_rate: 0,
-					quantity: freeQty,
-					discount_amount: 0,
-					discount_percentage: 0,
-					tax_amount: 0,
-					amount: 0,
-					stock_qty: 0,
-					uom: freeUom,
-					stock_uom: freeItem.stock_uom || freeUom,
-					conversion_factor: freeItem.conversion_factor || 1,
-					is_free_item: 1,
-					free_qty: freeQty,
-					pricing_rules: freeItem.pricing_rules || null,
-				})
+				continue
 			}
+
+			// Different product -> append dedicated free-item row
+			invoiceItems.value.push({
+				item_code: freeItem.item_code,
+				item_name: freeItem.item_name || freeItem.item_code,
+				rate: 0,
+				price_list_rate: 0,
+				quantity: freeQty,
+				qty: freeQty,
+				discount_amount: 0,
+				discount_percentage: 0,
+				tax_amount: 0,
+				amount: 0,
+				stock_qty: 0,
+				uom: freeUom,
+				stock_uom: freeItem.stock_uom || freeUom,
+				conversion_factor: freeItem.conversion_factor || 1,
+				is_free_item: 1,
+				free_qty: freeQty,
+				pricing_rules: freeItem.pricing_rules || null,
+			})
 		}
 
 		rebuildIncrementalCache()
 	}
-
 	/**
 	 * Extracts and normalizes the offer response from backend
 	 *
@@ -1165,6 +1394,7 @@ export const usePOSCartStore = defineStore("posCart", () => {
 	 * @returns {number} New total quantity
 	 */
 	function mergeItems(sourceItem, targetItem, quantity) {
+		applyPolicySnapshot(targetItem, sourceItem)
 		targetItem.quantity += quantity
 		recalculateItem(targetItem)
 		removeCartItem(sourceItem)
@@ -1180,13 +1410,24 @@ export const usePOSCartStore = defineStore("posCart", () => {
 	 */
 	async function applyUomChange(cartItem, newUom, qty) {
 		const uomData = cartItem.item_uoms?.find((u) => u.uom === newUom)
-		const conversionFactor = uomData?.conversion_factor || 1
+		const conversionFactor = Number(uomData?.conversion_factor || 1) || 1
 		const pricing = await resolveUomPricing(cartItem, newUom, conversionFactor, qty)
 
 		cartItem.uom = newUom
 		cartItem.conversion_factor = conversionFactor
 		cartItem.rate = pricing.rate
 		cartItem.price_list_rate = pricing.price_list_rate
+
+		applyUomSnapshot(
+			cartItem,
+			{
+				uom: newUom,
+				conversion_factor: conversionFactor,
+				rate: pricing.rate,
+				price_list_rate: pricing.price_list_rate,
+			},
+			qty,
+		)
 	}
 
 	/**
@@ -1199,6 +1440,14 @@ export const usePOSCartStore = defineStore("posCart", () => {
 		try {
 			const cartItem = findCartItem(itemCode, currentUom)
 			if (!cartItem || cartItem.uom === newUom) return
+
+			if (!isSellUomAllowed(cartItem, newUom)) {
+				showWarning(__("UOM \"{0}\" is not allowed to sell for item \"{1}\".", [
+					newUom,
+					cartItem.item_name || cartItem.item_code,
+				]))
+				return
+			}
 
 			// Check for existing item to merge with
 			const existingItem = findItemWithUom(itemCode, newUom, cartItem)
@@ -1232,8 +1481,16 @@ export const usePOSCartStore = defineStore("posCart", () => {
 				throw new Error("Item not found in cart")
 			}
 
+			applyPolicySnapshot(cartItem, cartItem)
+
 			// Handle UOM change with potential merge
 			if (updates.uom && updates.uom !== cartItem.uom) {
+				if (!isSellUomAllowed({ ...cartItem, ...updates }, updates.uom)) {
+					throw new Error(__("UOM \"{0}\" is not allowed to sell for item \"{1}\".", [
+						updates.uom,
+						cartItem.item_name || cartItem.item_code,
+					]))
+				}
 				const existingItem = findItemWithUom(itemCode, updates.uom, cartItem)
 				if (existingItem) {
 					const qtyToMerge = updates.quantity ?? cartItem.quantity
@@ -1271,6 +1528,30 @@ export const usePOSCartStore = defineStore("posCart", () => {
 			// Track manual rate edits for audit purposes
 			if (updates.is_rate_manually_edited !== undefined) cartItem.is_rate_manually_edited = updates.is_rate_manually_edited
 			if (updates.original_rate !== undefined) cartItem.original_rate = updates.original_rate
+
+			applyPolicySnapshot(cartItem, updates)
+			applyUomSnapshot(
+				cartItem,
+				{
+					uom: cartItem.uom,
+					conversion_factor: cartItem.conversion_factor,
+					rate: cartItem.rate,
+					price_list_rate: cartItem.price_list_rate,
+					selected_uom_label:
+						updates.selected_uom_label !== undefined
+							? updates.selected_uom_label
+							: cartItem.selected_uom_label,
+					required_stock_qty:
+						updates.required_stock_qty !== undefined
+							? updates.required_stock_qty
+							: cartItem.required_stock_qty,
+					available_stock_qty:
+						updates.available_stock_qty !== undefined
+							? updates.available_stock_qty
+							: cartItem.available_stock_qty,
+				},
+				updates.quantity ?? cartItem.quantity,
+			)			
 
 			recalculateItem(cartItem)
 			rebuildIncrementalCache()
@@ -1689,6 +1970,26 @@ export const usePOSCartStore = defineStore("posCart", () => {
 		}
 	)
 
+	watch(
+		() => [
+			canApplyDocumentDiscount.value,
+			invoiceItems.value.map((item) =>
+				[
+					item?.item_code || "",
+					item?.uom || "",
+					item?.qty ?? item?.quantity ?? 0,
+					item?.discount_allowed,
+					item?.is_discount_locked,
+					item?.is_free_item ? 1 : 0,
+				].join(":")
+			).join("|"),
+		],
+		() => {
+			sanitizeDocumentDiscountState()
+		},
+		{ immediate: true, flush: "post" },
+	)
+
 	return {
 		// State
 		invoiceItems,
@@ -1715,6 +2016,8 @@ export const usePOSCartStore = defineStore("posCart", () => {
 		itemCount,
 		isEmpty,
 		hasCustomer,
+		discountEligibleItems,
+		canApplyDocumentDiscount,
 		isProcessingOffers, // True when any offer operation is in progress
 		isSubmitting, // True when invoice submission is in progress (mutex protected)
 
@@ -1723,6 +2026,7 @@ export const usePOSCartStore = defineStore("posCart", () => {
 		removeItem,
 		updateItemQuantity,
 		clearCart,
+		sanitizeDocumentDiscountState,
 		setCustomer,
 		setDefaultCustomer,
 		setPendingItem,
