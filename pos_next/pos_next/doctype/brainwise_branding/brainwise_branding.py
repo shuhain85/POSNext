@@ -14,10 +14,10 @@ import secrets
 # MASTER KEY HASH - Only the person with the original key can disable branding
 # This hash was created from: secrets.token_urlsafe(32)
 # The original key must be kept secret - it is NOT stored anywhere in the code
-MASTER_KEY_HASH = "a19686b133d17d0b528355ae39692a0792780a55b50707dc1a58a0e59083830d"
+MASTER_KEY_HASH = "e1615a6afb22e72abd086bb27d39e16da8ad49dc9b179e7dc40f33e5c2467513"
 
 # Secondary protection - requires both master key AND this phrase
-PROTECTION_PHRASE_HASH = "3ddb5c12a034095ff81a85bbd06623a60e81252c296b747cf9c127dc57e013a8"
+PROTECTION_PHRASE_HASH = "b92b5bf30c11b2a31f029fc3df3e698e8279b84778c473495a99f800474b79be"
 
 
 class BrainWiseBranding(Document):
@@ -241,8 +241,8 @@ def get_branding_config():
 		# Return default config even on error
 		return {
 			"_t": base64.b64encode("Powered by".encode()).decode(),
-			"_l": base64.b64encode("BrainWise".encode()).decode(),
-			"_u": base64.b64encode("https://nexus.brainwise.me".encode()).decode(),
+			"_l": base64.b64encode("NoniERP".encode()).decode(),
+			"_u": base64.b64encode("https://noni-solutions.com".encode()).decode(),
 			"_i": 10000,
 			"_v": True,
 			"_e": 1
